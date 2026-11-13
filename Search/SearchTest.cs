@@ -83,6 +83,32 @@ internal static class SearchTest
         var teams = new AppEntry { Name = "Microsoft Teams (work or school)", AppId = "MSTeams_8wekyb3d8bbwe!MSTeams" };
         Check("key matches by exe name", UsageStore.KeyMatchesApp(ol, "outlook") && !UsageStore.KeyMatchesApp(ol, "teams"));
         Check("key matches packaged app by name", UsageStore.KeyMatchesApp(teams, UsageStore.Norm("Microsoft Teams (work or school)")));
+        {
+            var us5 = new UsageStore(cfg, tmp + ".5", () => clock);
+            var edge = new AppEntry { Name = "Microsoft Edge", AppId = "MSEdge" };
+            var terminal = new AppEntry { Name = "Terminal", AppId = "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App" };
+            var snip = new AppEntry { Name = "Snipping Tool", AppId = "Microsoft.ScreenSketch_8wekyb3d8bbwe!App" };
+            var notepad = new AppEntry { Name = "Notepad", AppId = @"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\notepad.exe" };
+            foreach (var k in new[] { "msedge", "windowsterminal", "msteams", "snippingtool" }) us5.Record(k, 1);
+            Check("frecency: time in msedge / WindowsTerminal / ms-teams counts for Edge / Terminal / Teams", us5.ScoreOfApp(edge) > 0.9 && us5.ScoreOfApp(terminal) > 0.9 && us5.ScoreOfApp(teams) > 0.9 && us5.ScoreOfApp(notepad) == 0,
+                $"{us5.ScoreOfApp(edge):0.00} {us5.ScoreOfApp(terminal):0.00} {us5.ScoreOfApp(teams):0.00} {us5.ScoreOfApp(notepad):0.00}");
+            Check("frecency: matching by name still counts (SnippingTool.exe -> Snipping Tool)", us5.ScoreOfApp(snip) > 0.9);
+            var us6 = new UsageStore(cfg, tmp + ".6", () => clock);
+            us6.Record("app:" + UsageStore.Norm("Outlook (classic)"), 1); us6.Record("setting:bluetooth", 1);
+            var appApp = new AppEntry { Name = "App", AppId = "Vendor.App_x!Main" }; var setApp = new AppEntry { Name = "Set", AppId = "set" };
+            Check("frecency: an app named like the key prefix ('App', 'Set') does not collect every choice", us6.ScoreOfApp(appApp) == 0 && us6.ScoreOfApp(setApp) == 0, $"{us6.ScoreOfApp(appApp)} {us6.ScoreOfApp(setApp)}");
+            // Spread's own window in front (the overview): the program before it stops counting
+            us6.OnForeground("firefox"); clock = clock.AddSeconds(2); us6.OnForeground(null); clock = clock.AddSeconds(20); us6.FlushPending();
+            Check("activation: seconds spent in Spread's overview do not count for the program before it", us6.ScoreOf("firefox") == 0);
+            us6.Save(true);
+            Check("usage.json is replaced through a temporary file (none left behind)", File.Exists(tmp + ".6") && !File.Exists(tmp + ".6.tmp") && new UsageStore(cfg, tmp + ".6", () => clock).ScoreOf("setting:bluetooth") > 0.9);
+        }
+
+        // ---- app catalog: Get-StartApps | ConvertTo-Json ----
+        var single = AppCatalog.ParseStartApps("{\"Name\":\"3D Viewer\",\"AppID\":\"Microsoft.Microsoft3DViewer_8wekyb3d8bbwe!Microsoft.Microsoft3DViewer\"}");
+        var many = AppCatalog.ParseStartApps("[{\"Name\":\"Calculator\",\"AppID\":\"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App\"},{\"Name\":\"Edge\",\"AppID\":\"MSEdge\"},{\"Name\":null,\"AppID\":\"x\"},{\"AppID\":\"y\"},3]");
+        Check("catalog: a single app (ConvertTo-Json writes an object, not an array)", single.Count == 1 && single[0].Name == "3D Viewer");
+        Check("catalog: many apps; entries without a name or id are skipped; no output = no apps", many.Count == 2 && many[1].AppId == "MSEdge" && AppCatalog.ParseStartApps("").Count == 0 && AppCatalog.ParseStartApps("\r\n").Count == 0);
 
         // ---- engine: used-often-first, apps before settings ----
         var catalog = new AppCatalog();
@@ -104,7 +130,9 @@ internal static class SearchTest
         var r4 = engine.Query("update");
         Check("engine: an app named like the query comes before settings of the same tier", r4.Count > 1 && r4[0].Kind == SearchKind.App && r4.Any(x => x.Kind == SearchKind.Setting), string.Join(",", r4.Take(3).Select(x => x.Title)));
         Check("engine: 'bluetooth' -> Bluetooth & devices", engine.Query("bluetooth").FirstOrDefault()?.Setting?.Id == "bluetooth");
-        Check("engine: 'device man' -> Device Manager (if present on this Windows)", engine.Query("device man").FirstOrDefault()?.Setting?.Id == "tool-devmgmt");
+        if (SettingsProvider.Load(cfg.Search).Any(x => x.Id == "tool-devmgmt"))
+            Check("engine: 'device man' -> Device Manager (if present on this Windows)", engine.Query("device man").FirstOrDefault()?.Setting?.Id == "tool-devmgmt");
+        else Console.WriteLine("  skip engine: 'device man' -> Device Manager (devmgmt.msc is not on this Windows)");
         Check("engine: 'env' -> Environment Variables", engine.Query("environment var").FirstOrDefault()?.Setting?.Id == "tool-env");
         Check("engine: empty query finds nothing", engine.Query("  ").Count == 0);
         var noSettings = new Config(); noSettings.Search.Settings = false;
@@ -112,6 +140,17 @@ internal static class SearchTest
         var extra = new Config(); extra.Search.ExtraSettings.Add(new ExtraSetting { Name = "Opdater Windows", Uri = "ms-settings:windowsupdate-action", Keywords = "søg efter opdateringer" });
         var extraEngine = new SearchEngine(catalog, SettingsProvider.Load(extra.Search), usage, extra.Search);
         Check("config: ExtraSettings are searchable (own words)", extraEngine.Query("opdater").FirstOrDefault()?.Setting?.Uri == "ms-settings:windowsupdate-action" && extraEngine.Query("opdateringer").Count > 0);
+        {
+            bool T(string text, bool uri, string exe, string args) { var r = SettingsProvider.ParseTarget(text); return r.isUri == uri && r.exe == exe && r.args == args; }
+            Check("config: ExtraSettings addresses (ms-settings:, https://, shell:) open as they are", T("ms-settings:display", true, "", "") && T(" https://intranet.example.com/a/b ", true, "", "") && T(@"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", true, "", ""));
+            Check("config: ExtraSettings programs with arguments are split", T("control /name Microsoft.Network", false, "control", "/name Microsoft.Network") && T("rundll32.exe sysdm.cpl,EditEnvironmentVariables", false, "rundll32.exe", "sysdm.cpl,EditEnvironmentVariables")
+                && T("\"C:\\My Tools\\x.exe\" -y --z", false, @"C:\My Tools\x.exe", "-y --z") && T(@"C:\Program Files\App\app.exe -p 1", false, @"C:\Program Files\App\app.exe", "-p 1") && T("explorer.exe shell:::{GUID}", false, "explorer.exe", "shell:::{GUID}"));
+            Check("config: ExtraSettings single programs and paths stay whole", T("devmgmt.msc", false, "devmgmt.msc", "") && T(@"C:\My Tools\thing", false, @"C:\My Tools\thing", "") && T(@"C:\Program Files\App\app.exe", false, @"C:\Program Files\App\app.exe", ""));
+            var ex2 = new Config(); ex2.Search.ExtraSettings.Add(new ExtraSetting { Name = "Network Center", Uri = "control /name Microsoft.NetworkAndSharingCenter" }); ex2.Search.ExtraSettings.Add(new ExtraSetting { Name = "Intranet", Uri = "https://intranet.example.com" });
+            var loaded = SettingsProvider.Load(ex2.Search);
+            var nc = loaded.First(x => x.Title == "Network Center"); var web = loaded.First(x => x.Title == "Intranet");
+            Check("config: ExtraSettings entries get program + arguments, a web address is not a tool", nc.Tool && nc.Exe == "control" && nc.Args == "/name Microsoft.NetworkAndSharingCenter" && !web.Tool && web.Uri == "https://intranet.example.com");
+        }
         var list = SettingsProvider.Builtin();
         Check("settings list: unique ids", list.Select(x => x.Id).Distinct().Count() == list.Count);
         Check("settings list: pages are ms-settings addresses", list.Where(x => !x.Tool).All(x => x.Uri.StartsWith("ms-settings:")), string.Join(",", list.Where(x => !x.Tool && !x.Uri.StartsWith("ms-settings:")).Select(x => x.Id)));
@@ -128,6 +167,14 @@ internal static class SearchTest
         Check("ipc: reply decoded (names, folder, size, date, total)", total == 128 && hits.Count == 2 && hits[0].Name == "Quarterly Report.pptx" && hits[0].Dir.EndsWith("Projects") && hits[0].Size == 2_345_678 && Math.Abs((hits[0].Modified - when).TotalSeconds) < 2 && hits[1].IsFolder && hits[1].Size == -1);
         Check("ipc: full path", hits[0].Full == @"C:\Users\x\OneDrive - Contoso\Projects\Quarterly Report.pptx");
         Check("ipc: truncated reply does not throw", EverythingProtocol.DecodeList2(buf.Take(60).ToArray(), out _).Count <= 2 && EverythingProtocol.DecodeList2(new byte[3], out _).Count == 0);
+        {
+            // one item whose name length (0x40000000) overflowed the 32-bit bounds check
+            var bad = new byte[40];
+            foreach (var (at, v) in new[] { (0, 1u), (4, 1u), (12, EverythingProtocol.REQ_NAME), (16, 14u), (20, 0u), (24, 28u), (28, 0x40000000u) }) BitConverter.GetBytes(v).CopyTo(bad, at);
+            int n = -1; bool threw = false;
+            try { n = EverythingProtocol.DecodeList2(bad, out _).Count; } catch { threw = true; }
+            Check("ipc: a huge string length in a reply does not throw", !threw && n == 0);
+        }
 
         foreach (var f in Directory.GetFiles(Path.GetTempPath(), "spread-usage-test-*")) { try { File.Delete(f); } catch { } }
 
