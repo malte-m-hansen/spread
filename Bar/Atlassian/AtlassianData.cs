@@ -90,6 +90,8 @@ internal static class AtlassianData
     /// <summary>Test hooks: the offline tests answer with a fake handler and keep their state file out of %APPDATA%.</summary>
     internal static string? StateDirOverride;
     internal static Func<string, string, string, AtlassianClient> NewClient = (site, email, token) => new AtlassianClient(site, email, token);
+    /// <summary>Milliseconds until the sprint/OKR part and the alerts part are due (for the tests).</summary>
+    internal static (long main, long fast) DueInForTests => (_nextMain - Environment.TickCount64, _nextFast - Environment.TickCount64);
 
     static AtlassianState State
     {
@@ -218,7 +220,9 @@ internal static class AtlassianData
     {
         if (dropClient) Client = null;
         Status = status; LastError = error; LastErrorAt = DateTime.Now;
-        _nextMain = _nextFast = Environment.TickCount64 + 60_000;
+        long retry = Environment.TickCount64 + 60_000;
+        // when only the alerts part failed (e.g. no Confluence access), the sprint/OKR part that just succeeded keeps its own schedule instead of all of it every minute
+        _nextFast = retry; _nextMain = dropClient ? retry : Math.Max(_nextMain, retry);
     });
 
     internal static async Task RefreshAsync(Config cfg)

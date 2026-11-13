@@ -348,6 +348,14 @@ internal static class AtlassianTest
             r.Answer = _ => new HttpResponseMessage(HttpStatusCode.Unauthorized);
             AtlassianData.RefreshNow(); Refresh();
             Check("refresh: a token that /myself refuses means 'connect again'", AtlassianData.Status == "reconnect" && AtlassianData.Client == null, AtlassianData.Status);
+
+            // no Confluence access: the Jira part works, the alerts part fails; the sprint/OKR part must not be redone every minute because of it
+            r.Answer = q => q.RequestUri!.AbsolutePath.StartsWith("/wiki") ? new HttpResponseMessage(HttpStatusCode.Forbidden) : FakeSite(q);
+            AtlassianData.RefreshNow(); Refresh();
+            var (mainIn, fastIn) = AtlassianData.DueInForTests;
+            Check("refresh: a failing Confluence part is an error and keeps the sprint schedule (5 min), alerts retry in 1 min",
+                AtlassianData.Status == "error" && AtlassianData.LastError == "HTTP 403" && AtlassianData.Client != null && AtlassianData.MyWork.Count == 1 && mainIn > 240_000 && fastIn is > 0 and <= 60_000,
+                $"{AtlassianData.Status} {AtlassianData.LastError}, main in {mainIn} ms, alerts in {fastIn} ms");
         }
         finally
         {
