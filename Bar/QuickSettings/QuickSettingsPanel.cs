@@ -268,9 +268,22 @@ internal sealed class QuickSettingsPanel
 
     // ---------------- actions ----------------
 
-    async void ToggleWifi() { bool on = !_wifiOn; _tiles["wifi"].IsOn = on; _tiles["wifi"].Subtitle = on ? "Turning on…" : "Turning off…"; await RadioCtl.SetAsync(RadioKind.WiFi, on); await RefreshRadios(); }
-    async void ToggleBluetooth() { bool on = !_btOn; _tiles["bluetooth"].IsOn = on; await RadioCtl.SetAsync(RadioKind.Bluetooth, on); await RefreshRadios(); }
-    async void ToggleAirplane() { bool turnRadiosOn = !_anyRadio; await RadioCtl.SetAllAsync(turnRadiosOn); await RefreshRadios(); }
+    // async void: an exception never reaches the tile's try/catch (it is raised on the dispatcher), so each one catches its own
+    async void ToggleWifi()
+    {
+        try { bool on = !_wifiOn; _tiles["wifi"].IsOn = on; _tiles["wifi"].Subtitle = on ? "Turning on…" : "Turning off…"; await RadioCtl.SetAsync(RadioKind.WiFi, on); await RefreshRadios(); }
+        catch (Exception e) { Log.Write("tile wifi: " + e.GetType().Name); }
+    }
+    async void ToggleBluetooth()
+    {
+        try { bool on = !_btOn; _tiles["bluetooth"].IsOn = on; await RadioCtl.SetAsync(RadioKind.Bluetooth, on); await RefreshRadios(); }
+        catch (Exception e) { Log.Write("tile bluetooth: " + e.GetType().Name); }
+    }
+    async void ToggleAirplane()
+    {
+        try { bool turnRadiosOn = !_anyRadio; await RadioCtl.SetAllAsync(turnRadiosOn); await RefreshRadios(); }
+        catch (Exception e) { Log.Write("tile airplane: " + e.GetType().Name); }
+    }
     void ToggleDark() { bool dark = !ThemeMode.IsDark(); ThemeMode.SetDark(dark); _tiles["dark"].IsOn = dark; _tiles["dark"].Subtitle = dark ? "On" : "Off"; }
     void ToggleDnd() { bool toastsOn = DndProbe.ToastsEnabled(); DndProbe.Set(!toastsOn); _tiles["dnd"].IsOn = toastsOn; _tiles["dnd"].Subtitle = toastsOn ? "On" : "Off"; }
     void ToggleAwake() { KeepAwake.Set(!KeepAwake.IsOn, _q.KeepAwakeMinutes); UpdateAwake(); }
