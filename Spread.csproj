@@ -9,6 +9,8 @@
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>Spread</AssemblyName>
+    <!-- The release version. Tag a release as v + this number (the release workflow checks that they match). -->
+    <Version>0.1.0</Version>
     <RootNamespace>Spread</RootNamespace>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <!-- No Spread.exe launcher: it is never used (run with 'dotnet Spread.dll') and each unsigned build of it trips Defender's
