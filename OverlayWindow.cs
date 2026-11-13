@@ -2015,20 +2015,15 @@ internal sealed class OverlayWindow : Window
 
     static string Norm(string s) => new string(s.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 
-    /// <summary>The topmost window of a running app that matches this start-menu entry (by exe name, else by name).</summary>
+    /// <summary>
+    /// The topmost window of a running app that matches this start-menu entry, by the dock's rules (AppUserModelID, exe hints, then name): by
+    /// process/app name alone a running Edge (msedge), Terminal (WindowsTerminal) or Teams (ms-teams) was not found and got started again.
+    /// </summary>
     IntPtr FindRunningWindow(AppEntry app)
     {
-        string? idExe = null;
-        try { if (app.AppId.Contains('\\') && app.AppId.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) idExe = Norm(System.IO.Path.GetFileNameWithoutExtension(app.AppId)); } catch { }
-        string n = Norm(app.Name);
-        foreach (var w in _cache.Get(out _))   // front-to-back order
-        {
-            string p = Norm(w.ProcName);
-            if (p.Length < 3) continue;
-            bool match = idExe != null ? p == idExe : (n.Length >= 3 && (n == p || n.StartsWith(p) || p.StartsWith(n)));
-            if (match) return w.Hwnd;
-        }
-        return IntPtr.Zero;
+        if (_aumids.Count > 300) _aumids.Clear();
+        var wins = _cache.Get(out _).Select(w => new DockWindow(w.Hwnd, w.Title, w.ExePath ?? "", Aumid(w.Hwnd), w.Minimized, w.Icon, w.ProcName)).ToList();   // front-to-back order
+        return DockBuilder.FindWindow(app, wins, _apps.All);
     }
 
     void LaunchApp(AppEntry app, bool forceNew = false)

@@ -71,6 +71,36 @@ internal static class DockTest
         Check("ShowFrequent adds the most used apps that are not pinned or running", freq.Select(x => x.Name).SequenceEqual(new[] { "Firefox", "Microsoft Teams", "Notepad" }), string.Join(",", freq.Select(x => x.Name)));
         Check("a pin that no longer exists is skipped", DockBuilder.Build(new List<string> { "Gone App", "Firefox" }, apps, new List<DockWindow>(), cfg).Count == 1);
 
+        // search: go to a running app instead of starting it again (same rules as the dock)
+        var edge = App("Microsoft Edge", "MSEdge");
+        var chrome = App("Google Chrome", "Chrome");
+        var calc = App("Calculator", "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App");
+        var webApp = App("Some Web App", "MSEdge._crx_abcdef");
+        var all = new List<AppEntry>(apps) { edge, chrome, calc, webApp };
+        var running = new List<DockWindow>
+        {
+            W(40, @"C:\Windows\System32\notepad.exe", null, "n"),
+            W(41, @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "MSEdge", "e"),
+            W(42, @"C:\Program Files\WindowsApps\y\WindowsTerminal.exe", null, "pwsh"),
+            W(43, @"C:\Program Files\WindowsApps\x\ms-teams.exe", "MSTeams_8wekyb3d8bbwe!MSTeams", "Chat"),
+            W(44, @"C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE", null, "Inbox"),
+            W(45, @"C:\Program Files\WindowsApps\c\CalculatorApp.exe", null, "Calculator"),
+            W(46, @"C:\Program Files\WindowsApps\y\WindowsTerminal.exe", null, "cmd"),
+        };
+        IntPtr Find(AppEntry a, List<DockWindow>? ws = null) => DockBuilder.FindWindow(a, ws ?? running, all);
+        Check("search finds a running Edge (exe msedge, name Microsoft Edge)", Find(edge) == new IntPtr(41));
+        Check("search finds Edge's window without its AppUserModelID (another profile) by the AppID = exe name", Find(edge, new() { W(47, @"C:\x\msedge.exe", "MSEdge.UserData.Profile2") }) == new IntPtr(47) && Find(chrome, new() { W(48, @"C:\x\chrome.exe") }) == new IntPtr(48));
+        Check("search finds Terminal (WindowsTerminal.exe, no AppUserModelID), the frontmost of its windows", Find(terminal) == new IntPtr(42));
+        Check("search finds Teams by AppUserModelID (exe ms-teams)", Find(teams) == new IntPtr(43));
+        Check("search: OUTLOOK.EXE is Outlook (classic)'s, not 'Outlook (new)''s", Find(outlookClassic) == new IntPtr(44) && Find(outlookNew) == IntPtr.Zero);
+        Check("search: an app that is not running finds nothing (it gets started)", Find(firefox) == IntPtr.Zero && Find(explorer) == IntPtr.Zero && Find(edge, new()) == IntPtr.Zero);
+        Check("search: last resort by name for a window no app claims (CalculatorApp.exe -> Calculator)", Find(calc) == new IntPtr(45));
+        Check("search: a web app's window (its own AppUserModelID) is not the browser's", Find(edge, new() { W(49, @"C:\x\msedge.exe", "MSEdge._crx_abcdef") }) == IntPtr.Zero && Find(webApp, new() { W(49, @"C:\x\msedge.exe", "MSEdge._crx_abcdef") }) == new IntPtr(49));
+        Check("pin: exe:...msedge.exe is the Edge Start-menu app", DockBuilder.ResolvePin(@"exe:C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", all) == edge);
+        var edgePin = DockBuilder.Build(new List<string> { "id:MSEdge" }, all, new List<DockWindow> { W(50, @"C:\x\msedge.exe", "MSEdge.UserData.Profile2", "front"), W(51, @"C:\x\msedge.exe", "MSEdge", "back") }, new DockConfig());
+        Check("dock: an entry's windows are front to back whichever kind of match found them", edgePin.Count == 1 && edgePin[0].Windows.SequenceEqual(new[] { new IntPtr(50), new IntPtr(51) }) && edgePin[0].Titles.SequenceEqual(new[] { "front", "back" }),
+            string.Join(",", edgePin.SelectMany(x => x.Windows)));
+
         // clicking: latest window, or the next one when the app is already in front
         var live = new List<IntPtr> { new(10), new(11), new(12) };
         Check("click: latest window when the app is not in front", DockBuilder.NextWindow(live, new IntPtr(99)) == new IntPtr(10));
