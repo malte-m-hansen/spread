@@ -218,9 +218,12 @@ internal static class WifiCtl
             finally { WlanFreeMemory(lp); }
         }
         finally { WlanCloseHandle(h, IntPtr.Zero); }
-        // a network with a profile is listed once with and once without it: keep the entry with the profile
-        return res.GroupBy(w => w.Ssid).Select(g => g.OrderByDescending(x => x.Connected).ThenByDescending(x => x.Saved).ThenByDescending(x => x.Signal).First()).OrderByDescending(w => w.Connected).ThenByDescending(w => w.Signal).ToList();
+        return Dedupe(res);
     }
+
+    /// <summary>One row per SSID, connected first, then by signal. A network with a profile is listed once with and once without it: keep the entry with the profile.</summary>
+    internal static List<WifiNet> Dedupe(IEnumerable<WifiNet> all) =>
+        all.GroupBy(w => w.Ssid).Select(g => g.OrderByDescending(x => x.Connected).ThenByDescending(x => x.Saved).ThenByDescending(x => x.Signal).First()).OrderByDescending(w => w.Connected).ThenByDescending(w => w.Signal).ToList();
 
     /// <summary>Connects with a saved profile, by its PROFILE name (see <see cref="WifiNet.Profile"/>; not always the SSID).</summary>
     public static bool Connect(string profile)
