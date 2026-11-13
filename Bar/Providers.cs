@@ -278,7 +278,7 @@ internal static class WslProbe
 // ---------------- weather (Open-Meteo, no key) ----------------
 
 internal sealed record WeatherHour(DateTime Time, double Temp, int Code);
-internal sealed record WeatherDay(DateTime Date, double Max, double Min, int Code);
+internal sealed record WeatherDay(DateTime Date, double Max, double Min, int Code, DateTime? Sunrise = null, DateTime? Sunset = null);
 internal sealed record WeatherData(double Temp, int Code, bool IsDay, double Wind, List<WeatherHour> Hours, List<WeatherDay> Days, DateTime? Sunrise = null, DateTime? Sunset = null);
 
 internal static class WeatherProbe
@@ -317,20 +317,30 @@ internal static class WeatherProbe
             var days = new List<WeatherDay>();
             var d = r.GetProperty("daily");
             var dt = d.GetProperty("time"); var dMax = d.GetProperty("temperature_2m_max"); var dMin = d.GetProperty("temperature_2m_min"); var dC = d.GetProperty("weather_code");
-            for (int i = 0; i < dt.GetArrayLength(); i++)
-                if (DateTime.TryParse(dt[i].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var t))
-                    days.Add(new WeatherDay(t, dMax[i].GetDouble(), dMin[i].GetDouble(), dC[i].GetInt32()));
-            DateTime? sr = null, ss = null;
-            try
+            d.TryGetProperty("sunrise", out var srA); d.TryGetProperty("sunset", out var ssA);
+            DateTime? At(JsonElement arr, int i)
             {
-                if (d.TryGetProperty("sunrise", out var srA) && DateTime.TryParse(srA[0].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var a)) sr = a;
-                if (d.TryGetProperty("sunset", out var ssA) && DateTime.TryParse(ssA[0].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var b)) ss = b;
+                try { return arr.ValueKind == JsonValueKind.Array && i < arr.GetArrayLength() && DateTime.TryParse(arr[i].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var x) ? x : null; }
+                catch { return null; }
             }
-            catch { }
+            for (int i = 0; i < dt.GetArrayLength(); i++)
+                if (DateTime.TryParse(dt[i].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var t)
+                    && dMax[i].ValueKind == JsonValueKind.Number && dMin[i].ValueKind == JsonValueKind.Number && dC[i].ValueKind == JsonValueKind.Number)   // a day without values is left out instead of failing the whole forecast
+                    days.Add(new WeatherDay(t, dMax[i].GetDouble(), dMin[i].GetDouble(), dC[i].GetInt32(), At(srA, i), At(ssA, i)));
+            DateTime? sr = At(srA, 0), ss = At(ssA, 0);
             return new WeatherData(cur.GetProperty("temperature_2m").GetDouble(), cur.GetProperty("weather_code").GetInt32(),
                 cur.GetProperty("is_day").GetInt32() == 1, cur.GetProperty("wind_speed_10m").GetDouble(), hours, days, sr, ss);
         }
         catch { return null; }
+    }
+
+    /// <summary>Day or night at <paramref name="t"/> (the location's local time, like the forecast) from that day's sunrise/sunset;
+    /// the fixed 07-20 h rule when the forecast has no sun times for that day. A fixed rule is wrong by hours in Danish winter and summer.</summary>
+    public static bool IsDayAt(WeatherData d, DateTime t)
+    {
+        var day = d.Days.FirstOrDefault(x => x.Date.Date == t.Date);
+        if (day?.Sunrise is { } rise && day.Sunset is { } set && rise < set) return t >= rise && t < set;
+        return t.Hour is >= 7 and < 20;
     }
 
     public static string Glyph(int code, bool day) => code switch

@@ -52,7 +52,7 @@ internal sealed class WeatherWidget : BarWidget
         {
             WeatherData? d = null;
             try { d = await WeatherProbe.FetchAsync(loc); } catch (Exception e) { Log.Write("weather fetch failed: " + e.GetType().Name); }
-            Ctx.Dispatcher.BeginInvoke(new Action(() =>
+            _ = Ctx.Dispatcher.BeginInvoke(new Action(() =>
             {
                 _busy = false;
                 if (d == null) { _due = Environment.TickCount64 + 2 * 60_000; return; }   // try again soon
@@ -70,7 +70,7 @@ internal sealed class WeatherWidget : BarWidget
         var now = DateTime.Now;
         var hours = _data.Hours.Where(h => h.Time >= now.Date.AddHours(now.Hour)).Take(12).Where((h, i) => i % 2 == 0);
         sp.Children.Add(new Border { Height = 8 });
-        foreach (var h in hours) sp.Children.Add(BarUi.Row($"{h.Time:HH:mm}", $"{WeatherProbe.Glyph(h.Code, h.Time.Hour is >= 7 and < 20)} {Math.Round(h.Temp):0}°"));
+        foreach (var h in hours) sp.Children.Add(BarUi.Row($"{h.Time:HH:mm}", $"{WeatherProbe.Glyph(h.Code, WeatherProbe.IsDayAt(_data, h.Time))} {Math.Round(h.Temp):0}°"));
         sp.Children.Add(new Border { Height = 8 });
         foreach (var d in _data.Days.Skip(1).Take(3)) sp.Children.Add(BarUi.Row($"{d.Date:ddd d MMM}", $"{WeatherProbe.Glyph(d.Code, true)} {Math.Round(d.Max):0}° / {Math.Round(d.Min):0}°"));
         return sp;
