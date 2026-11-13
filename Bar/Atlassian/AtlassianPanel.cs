@@ -62,7 +62,8 @@ internal sealed class AtlassianPanel
     readonly TextBlock _statusText = BarUi.Txt("", 12, BarUi.Dim, FontWeights.Normal);
     readonly DateTime _openedAt = DateTime.Now, _prevLook;
     string _sig = "";
-    bool _closed;
+    bool _closed, _settingsOpen;
+    int _searchSeq;
     PasswordBox? _tokenBox;
     string? _columnFilter;
     TextBlock? _connectMsg;
@@ -72,9 +73,10 @@ internal sealed class AtlassianPanel
         _ctx = ctx; _cfg = ctx.Cfg; _a = _cfg.Atlassian;
         _prevLook = AtlassianData.LastLook;
         Root = _host;
+        _results.View.Visibility = Visibility.Collapsed;   // once: a rebuild for new data keeps search results the user is reading
         Build();
         AtlassianData.Changed += OnData;
-        AtlassianData.RefreshNow();
+        AtlassianData.RefreshIfOlder(60);
     }
 
     public void Closed()
@@ -87,6 +89,7 @@ internal sealed class AtlassianPanel
     void OnData()
     {
         if (_closed) return;
+        if (_settingsOpen) return;   // a rebuild would throw away the settings being edited; closing them rebuilds with the newest data
         string sig = Signature();
         if (sig == _sig) { UpdateStatusText(); return; }
         Build();
@@ -168,7 +171,7 @@ internal sealed class AtlassianPanel
     void Build()
     {
         _sig = Signature();
-        if (AtlassianData.Status is "not connected" or "reconnect") { BuildConnect(); return; }
+        if (AtlassianData.Status is "not connected" or "reconnect") { _results.View.Visibility = Visibility.Collapsed; BuildConnect(); return; }   // no old results after connecting again
 
         // The section views live as long as the panel: take them out of the previous layout first (Build can run twice in a row, e.g. when new data
         // arrives while a settings view is closing - WPF refuses an element that still has a parent).
@@ -211,7 +214,6 @@ internal sealed class AtlassianPanel
         var all = new StackPanel();
         all.Children.Add(header);
         all.Children.Add(_results.View);
-        _results.View.Visibility = Visibility.Collapsed;
         all.Children.Add(cols);
         _host.Content = all;
 
@@ -228,7 +230,11 @@ internal sealed class AtlassianPanel
         _statusText.Foreground = AtlassianData.Status is "reconnect" or "error" ? Red : warn ? Amber : BarUi.Dim;
     }
 
-    void ShowSettings() => _host.Content = AtlassianSettings.Build(_ctx, _cfg, Build);
+    void ShowSettings()
+    {
+        _settingsOpen = true;
+        _host.Content = AtlassianSettings.Build(_ctx, _cfg, () => { _settingsOpen = false; Build(); });
+    }
 
     // ---------------- connect ----------------
 
@@ -246,7 +252,8 @@ internal sealed class AtlassianPanel
             return box;
         }
         var site = Field("Site", string.IsNullOrWhiteSpace(_a.Site) ? "yourcompany.atlassian.net" : _a.Site);
-        var email = Field("Atlassian e-mail", AtlassianData.EmailFor(_cfg));
+        var email = Field("Atlassian e-mail", AtlassianData.KnownEmail(_cfg));
+        if (email.Text.Length == 0) FillEmailLater(email);
         sp.Children.Add(T("API token", 12, BarUi.Dim));
         _tokenBox = new PasswordBox { Height = 28, Padding = new Thickness(8, 3, 8, 3), FontSize = 13, Background = Fz(Color.FromRgb(0x2A, 0x2A, 0x2A)), Foreground = Brushes.White, CaretBrush = Brushes.White, BorderBrush = Track, Margin = new Thickness(0, 2, 0, 8) };
         _tokenBox.PreviewMouseDown += (_, _) => FocusLater(_tokenBox);
@@ -262,6 +269,13 @@ internal sealed class AtlassianPanel
             Build();
         }));
         _host.Content = sp;
+    }
+
+    /// <summary>The Windows UPN comes from whoami (up to 2 s): looked up in the background instead of freezing the panel, filled in unless the user typed one.</summary>
+    async void FillEmailLater(TextBox box)
+    {
+        string upn = await System.Threading.Tasks.Task.Run(() => AtlassianData.EmailFor(_cfg));
+        if (!_closed && upn.Length > 0 && box.Text.Length == 0) box.Text = upn;
     }
 
     void FocusLater(Control c)
@@ -544,13 +558,14 @@ internal sealed class AtlassianPanel
         if (KeyRx.IsMatch(q)) { OpenUrl(IssueUrl(q.ToUpperInvariant())); return; }
         if (Regex.IsMatch(q, @"^\d{1,6}$")) { OpenUrl(IssueUrl($"{_a.Project}-{q}")); return; }
         if (AtlassianData.Client == null) return;
+        int seq = ++_searchSeq;   // a slower earlier search must not overwrite the results of a later one
         _results.View.Visibility = Visibility.Visible;
         _results.Begin("Search results");
         _results.Note("Searching…");
         try
         {
             var (jira, conf) = await JiraData.QuickSearchAsync(AtlassianData.Client, AtlassianData.Site, q);
-            if (_closed) return;
+            if (_closed || seq != _searchSeq) return;
             _results.Begin($"Search results for \"{AtlassianLogic.Short(q, 30)}\"");
             _results.Actions.Children.Add(Link("Search in Jira", () => OpenUrl($"https://{AtlassianData.Site}/issues/?jql=" + Uri.EscapeDataString($"text ~ \"{JiraData.Esc(q)}*\" ORDER BY updated DESC"))));
             _results.Actions.Children.Add(Link("Search in Confluence", () => OpenUrl($"https://{AtlassianData.Site}/wiki/search?text=" + Uri.EscapeDataString(q))));
@@ -562,7 +577,7 @@ internal sealed class AtlassianPanel
             }
             foreach (var c in conf) _results.List.Children.Add(ConfRow(c));
         }
-        catch (Exception ex) { _results.Begin("Search results"); _results.Note("Search failed (" + ex.GetType().Name + ")."); }
+        catch (Exception ex) { if (seq != _searchSeq) return; _results.Begin("Search results"); _results.Note("Search failed (" + ex.GetType().Name + ")."); }
     }
 }
 

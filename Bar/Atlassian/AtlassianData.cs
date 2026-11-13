@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 
@@ -79,48 +80,78 @@ internal static class AtlassianData
     public static event Action? Changed;
 
     static string _site = "";
-    static long _nextMain, _nextFast;
-    static int _busy, _fastCount;
+    static long _nextMain, _nextFast, _mainAt, _fastAt;
+    static int _busy, _fastCount, _gen;
+    static string? _upn;
     static AtlassianState? _state;
-    public static string StatePath => Path.Combine(Config.Dir, "atlassian-state.json");
+    static readonly object Gate = new(), StateGate = new();
+    public static string StatePath => Path.Combine(StateDirOverride ?? Config.Dir, "atlassian-state.json");
+
+    /// <summary>Test hooks: the offline tests answer with a fake handler and keep their state file out of %APPDATA%.</summary>
+    internal static string? StateDirOverride;
+    internal static Func<string, string, string, AtlassianClient> NewClient = (site, email, token) => new AtlassianClient(site, email, token);
 
     static AtlassianState State
     {
         get
         {
-            if (_state != null) return _state;
-            try { if (File.Exists(StatePath)) _state = JsonSerializer.Deserialize<AtlassianState>(File.ReadAllText(StatePath)); } catch { }
-            if (_state == null || _state.LastLook == default) { _state ??= new AtlassianState(); _state.LastLook = DateTime.UtcNow; }
-            return _state;
+            lock (StateGate)   // the panel (UI thread) and the refresh (background) both use it
+            {
+                if (_state != null) return _state;
+                try { if (File.Exists(StatePath)) _state = JsonSerializer.Deserialize<AtlassianState>(File.ReadAllText(StatePath)); } catch { }
+                if (_state == null || _state.LastLook == default) { _state ??= new AtlassianState(); _state.LastLook = DateTime.UtcNow; }
+                _state.Alerted ??= new();
+                return _state;
+            }
         }
     }
 
     static void SaveState()
     {
-        try { Directory.CreateDirectory(Config.Dir); File.WriteAllText(StatePath, JsonSerializer.Serialize(State)); } catch { }
+        lock (StateGate) { try { StateFile.Write(StatePath, JsonSerializer.Serialize(State)); } catch { } }
     }
 
     /// <summary>Moment of the previous look at the panel; events after it count as new.</summary>
     public static DateTime LastLook => State.LastLook.ToLocalTime();
 
-    public static void MarkLooked() { State.LastLook = DateTime.UtcNow; SaveState(); Raise(); }
+    public static void MarkLooked() { lock (StateGate) State.LastLook = DateTime.UtcNow; SaveState(); Raise(); }
 
-    public static int NewCount => Changes.Count(e => e.When > LastLook && (e.Kind is "mention" or "comment" or "status" or "assignee" or "created")) + ConfMentions.Count(m => m.When > LastLook);
+    public static int NewCount => AtlassianLogic.CountNew(Changes, ConfMentions, LastLook, MyId, MyName);
 
     static void Raise() => Application.Current?.Dispatcher.BeginInvoke(new Action(() => Changed?.Invoke()));
 
+    /// <summary>
+    /// Applies results of the refresh started at generation <paramref name="gen"/>, unless the caches were reset (other board/project/space), the account
+    /// disconnected or connected since. The config is edited in place, so an older refresh could otherwise land the old project's data (or its client, after
+    /// Disconnect) afterwards, and push the refresh that the reset asked for out by a whole interval.
+    /// </summary>
+    static bool Commit(int gen, Action apply)
+    {
+        lock (Gate)
+        {
+            if (gen != _gen) return false;
+            apply();
+            return true;
+        }
+    }
+
+    static bool Stale(int gen) => gen != Volatile.Read(ref _gen);
+
+    /// <summary>The Atlassian e-mail: the configured one, else the Windows UPN from whoami (asked once per session, at most 2 s: call it off the UI thread).</summary>
     public static string EmailFor(Config cfg)
     {
         if (!string.IsNullOrWhiteSpace(cfg.Atlassian.Email)) return cfg.Atlassian.Email;
+        if (_upn != null) return _upn;
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo("whoami", "/upn") { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            using var p = System.Diagnostics.Process.Start(psi)!;
-            string o = p.StandardOutput.ReadToEnd().Trim(); p.WaitForExit(2000);
-            return o.Contains('@') ? o : "";
+            string o = ConsoleTool.Run("whoami", new[] { "/upn" }, 2000)?.output ?? "";
+            return o.Contains('@') ? _upn = o : "";
         }
         catch { return ""; }
     }
+
+    /// <summary>The e-mail as far as it is known without starting whoami (for filling a form on the UI thread).</summary>
+    public static string KnownEmail(Config cfg) => !string.IsNullOrWhiteSpace(cfg.Atlassian.Email) ? cfg.Atlassian.Email : _upn ?? "";
 
     /// <summary>One line for the panel header / tooltip.</summary>
     public static string HealthText(Config cfg)
@@ -163,65 +194,98 @@ internal static class AtlassianData
 
     public static void RefreshNow() { _nextMain = 0; _nextFast = 0; }
 
+    /// <summary>Opening the panel asks for fresh data, but not again when the last answers are younger than <paramref name="seconds"/> (a full refresh is 10-15 requests).</summary>
+    public static void RefreshIfOlder(int seconds)
+    {
+        long now = Environment.TickCount64, max = seconds * 1000L;
+        if (_mainAt == 0 || now - _mainAt > max) _nextMain = 0;
+        if (_fastAt == 0 || now - _fastAt > max) _nextFast = 0;
+    }
+
     public static void ResetCaches()
     {
-        Sprint = null; MyWork = new(); Okr = null; Blocks = new(); Changes = new(); ConfPages = new(); ConfComments = new(); ConfMentions = new();
+        lock (Gate)
+        {
+            _gen++;   // a refresh still running for the old board / project / space must not land its answers afterwards
+            Sprint = null; MyWork = new(); Okr = null; Blocks = new(); Changes = new(); ConfPages = new(); ConfComments = new(); ConfMentions = new();
+            _mainAt = _fastAt = 0;
+        }
+        JiraData.ClearCaches();
         RefreshNow(); Raise();
     }
 
-    static void Fail(string status, string error)
+    static void Fail(int gen, string status, string error, bool dropClient = false) => Commit(gen, () =>
     {
+        if (dropClient) Client = null;
         Status = status; LastError = error; LastErrorAt = DateTime.Now;
         _nextMain = _nextFast = Environment.TickCount64 + 60_000;
-    }
+    });
 
-    static async Task RefreshAsync(Config cfg)
+    internal static async Task RefreshAsync(Config cfg)
     {
         var a = cfg.Atlassian;
         long now = Environment.TickCount64;
+        int gen = Volatile.Read(ref _gen);
+        AtlassianClient? verified = null;   // a client whose token /myself accepted
         try
         {
-            if (Client == null)
+            var c = Client;
+            if (c == null)
             {
                 var token = TokenStore.Load();
-                if (token == null) { Status = "not connected"; _nextMain = now + 5000; Raise(); return; }
-                var client = new AtlassianClient(a.Site, EmailFor(cfg), token);
-                _site = client.Site;
+                if (token == null) { Commit(gen, () => { Status = "not connected"; _nextMain = now + 5000; }); Raise(); return; }
+                var client = NewClient(a.Site, EmailFor(cfg), token);
                 var (id, name) = await JiraData.MeAsync(client);
-                MyId = id; MyName = name; Client = client;
+                if (!Commit(gen, () => { _site = client.Site; MyId = id; MyName = name; Client = client; })) return;
+                c = client;
             }
-            var c = Client!;
+            verified = c;
             if (now >= _nextMain)
             {
                 var (snap, pf) = await JiraData.SprintAsync(c, a.BoardId);
-                PointsField = pf; Sprint = snap;
-                MyWork = await JiraData.MyWorkAsync(c, new[] { a.Project }.Concat(a.OtherProjects), pf);
-                Okr = await JiraData.OkrAsync(c, a.Project, pf);
-                Blocks = await JiraData.BlocksAsync(c, (snap?.Issues ?? new List<IssueLite>()).Concat(MyWork), pf);
-                _nextMain = Environment.TickCount64 + Math.Max(1, a.RefreshMinutes) * 60_000L;
+                if (!Commit(gen, () => { PointsField = pf; Sprint = snap; })) return;
+                var work = await JiraData.MyWorkAsync(c, new[] { a.Project }.Concat(a.OtherProjects ?? Array.Empty<string>()), pf);
+                if (!Commit(gen, () => MyWork = work)) return;
+                var okr = await JiraData.OkrAsync(c, a.Project, pf);
+                if (!Commit(gen, () => Okr = okr)) return;
+                var blocks = await JiraData.BlocksAsync(c, (snap?.Issues ?? new List<IssueLite>()).Concat(work), pf);
+                if (!Commit(gen, () => { Blocks = blocks; _mainAt = Environment.TickCount64; _nextMain = _mainAt + Math.Max(1, a.RefreshMinutes) * 60_000L; })) return;
             }
             if (now >= _nextFast)
             {
                 var since = new[] { LastLook, DateTime.Now.AddDays(-3) }.Min();
-                Changes = await JiraData.ChangesAsync(c, c.Site, a.Project, since, MyId, MyName);
-                ConfMentions = await JiraData.CqlAsync(c, c.Site, "mention = currentUser() ORDER BY lastmodified DESC", 8);
+                var changes = await JiraData.ChangesAsync(c, c.Site, a.Project, since, MyId, MyName);
+                if (!Commit(gen, () => Changes = changes)) return;
+                var mentions = await JiraData.CqlAsync(c, c.Site, "mention = currentUser() ORDER BY lastmodified DESC", 8);
+                if (!Commit(gen, () => ConfMentions = mentions)) return;
                 if ((_fastCount++ & 1) == 0 || ConfPages.Count == 0)
                 {
-                    ConfPages = await JiraData.CqlAsync(c, c.Site, $"space = {a.ConfluenceSpace} AND type in (page, blogpost) ORDER BY lastmodified DESC", 8);
-                    ConfComments = await JiraData.CqlAsync(c, c.Site, $"space = {a.ConfluenceSpace} AND type = comment ORDER BY lastmodified DESC", 8);
+                    var pages = await JiraData.CqlAsync(c, c.Site, $"space = {JiraData.Q(a.ConfluenceSpace)} AND type in (page, blogpost) ORDER BY lastmodified DESC", 8);
+                    if (!Commit(gen, () => ConfPages = pages)) return;
+                    var comments = await JiraData.CqlAsync(c, c.Site, $"space = {JiraData.Q(a.ConfluenceSpace)} AND type = comment ORDER BY lastmodified DESC", 8);
+                    if (!Commit(gen, () => ConfComments = comments)) return;
                 }
-                _nextFast = Environment.TickCount64 + Math.Clamp(a.Alerts.PollSeconds, 30, 600) * 1000L;
-                ProcessAlerts(cfg);
+                if (!Commit(gen, () => { _fastAt = Environment.TickCount64; _nextFast = _fastAt + Math.Clamp(a.Alerts.PollSeconds, 30, 600) * 1000L; })) return;
+                ProcessAlerts(cfg, gen);
             }
-            Status = "ok"; LastOk = DateTime.Now;
+            if (!Commit(gen, () => { Status = "ok"; LastOk = DateTime.Now; })) return;
         }
-        catch (AtlassianException e) when (e.Status is 401 or 403) { Client = null; Fail("reconnect", "HTTP " + e.Status); Log.Write("atlassian: token rejected (HTTP " + e.Status + ")"); }
-        catch (AtlassianException e) { Fail("error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status); }
-        catch (HttpRequestException) { Fail("offline", "network"); }
-        catch (TaskCanceledException) { Fail("offline", "timeout"); }
+        catch (Exception) when (Stale(gen)) { return; }   // the settings changed or the account (dis)connected meanwhile: these answers are for the old ones
+        catch (AtlassianException e) when (e.Status is 401 or 403)
+        {
+            // The token, or only this request (no permission for a board or space, a scope the token lacks)? /myself tells. Showing the connect form for the
+            // latter made the panel flip between data and "connect again" every minute, and connecting again cannot fix it.
+            bool tokenOk = false;
+            if (verified != null) try { await JiraData.MeAsync(verified); tokenOk = true; } catch { }
+            if (tokenOk) { Fail(gen, "error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status + " (the token itself is accepted)"); }
+            else { Fail(gen, "reconnect", "HTTP " + e.Status, dropClient: true); Log.Write("atlassian: token rejected (HTTP " + e.Status + ")"); }
+        }
+        catch (AtlassianException e) { Fail(gen, "error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status); }
+        catch (HttpRequestException) { Fail(gen, "offline", "network"); }
+        catch (TaskCanceledException) { Fail(gen, "offline", "timeout"); }
         catch (Exception e)
         {
-            Fail("error", e.GetType().Name + " – details in the log");
+            Fail(gen, "error", e.GetType().Name + " – details in the log");
             string where = (e.StackTrace ?? "").Split('\n').FirstOrDefault()?.Trim() ?? "";
             Log.Write("atlassian internal error: " + e.GetType().Name + " " + where);
         }
@@ -230,18 +294,22 @@ internal static class AtlassianData
 
     // ---------------- alerts ----------------
 
-    static void ProcessAlerts(Config cfg)
+    static void ProcessAlerts(Config cfg, int gen)
     {
         var al = cfg.Atlassian.Alerts;
-        var st = State;
-        var set = new AlertSettings { Mentions = al.Mentions, Assigned = al.Assigned, Confluence = al.ConfluenceMentions };
-        bool first = st.LastAlert == default;   // very first run: remember what exists, do not toast it
-        var alerted = new HashSet<string>(st.Alerted);
-        var found = AtlassianLogic.NewAlerts(Changes, ConfMentions, MyName, first ? DateTime.MinValue : st.LastAlert.ToLocalTime(), alerted, set);
-        foreach (var f in found) alerted.Add(f.Id);
-        st.Alerted = alerted.TakeLast(200).ToList();
-        st.LastAlert = DateTime.UtcNow;
-        SaveState();
+        bool first;
+        List<AlertCandidate> found;
+        lock (StateGate)
+        {
+            if (Stale(gen)) return;
+            var st = State;
+            var set = new AlertSettings { Mentions = al.Mentions, Assigned = al.Assigned, Confluence = al.ConfluenceMentions };
+            first = st.LastAlert == default;   // very first run: remember what exists, do not toast it
+            found = AtlassianLogic.NewAlerts(Changes, ConfMentions, MyName, first ? DateTime.MinValue : st.LastAlert.ToLocalTime(), new HashSet<string>(st.Alerted), set);
+            st.Alerted = StateFile.Remember(st.Alerted, found.Select(f => f.Id), 200);
+            st.LastAlert = DateTime.UtcNow;
+            SaveState();
+        }
         if (first || !al.Enabled || found.Count == 0) return;
         Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
         {
@@ -254,11 +322,12 @@ internal static class AtlassianData
     {
         try
         {
-            var client = new AtlassianClient(site, email, token.Trim());
+            var client = NewClient(site, email, token.Trim());
             var (id, name) = await JiraData.MeAsync(client);
             if (!TokenStore.Save(token.Trim())) return "Could not store the token in Windows Credential Manager.";
             cfg.Atlassian.Site = client.Site; cfg.Atlassian.Email = email.Trim(); cfg.Save();
-            _site = client.Site; MyId = id; MyName = name; Client = client; Status = "ok"; LastOk = DateTime.Now;
+            // a refresh still running with the old token must not drop this client ("reconnect") or land its answers afterwards
+            lock (Gate) { _gen++; _site = client.Site; MyId = id; MyName = name; Client = client; Status = "ok"; LastOk = DateTime.Now; }
             RefreshNow(); Raise();
             return null;
         }
@@ -273,14 +342,14 @@ internal static class AtlassianData
         {
             var token = TokenStore.Load();
             if (token == null) return "No token stored: connect first.";
-            var client = Client ?? new AtlassianClient(cfg.Atlassian.Site, EmailFor(cfg), token);
+            var client = Client ?? NewClient(cfg.Atlassian.Site, await Task.Run(() => EmailFor(cfg)), token);   // whoami off the UI thread
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var (id, name) = await JiraData.MeAsync(client);
             sw.Stop();
             string board = "";
             try { var b = await client.GetAsync($"/rest/agile/1.0/board/{boardId}"); board = b.TryGetProperty("name", out var n) ? $" · board: {n.GetString()}" : ""; }
             catch (AtlassianException e) { board = $" · board {boardId}: HTTP {e.Status}"; }
-            return $"Signed in as {name} · {(client.Scoped ? "scoped token" : "unscoped token (can write - prefer a read-only scoped token)")} · {sw.ElapsedMilliseconds} ms{board}";
+            return $"Signed in as {name} · {(client.Scoped ? "scoped token" : "unscoped token (can write - prefer a read-only scoped token)")}{(TokenStore.FromEnvironment ? " from SPREAD_ATLASSIAN_TOKEN" : "")} · {sw.ElapsedMilliseconds} ms{board}";
         }
         catch (AtlassianException e) { return e.Status is 401 or 403 ? "Atlassian rejected the token." : "Atlassian answered HTTP " + e.Status + "."; }
         catch (Exception e) { return "Could not reach Atlassian (" + e.GetType().Name + ")."; }
@@ -293,7 +362,7 @@ internal static class AtlassianData
 
     public static void Disconnect()
     {
-        TokenStore.Delete(); Client = null; Status = "not connected";
+        lock (Gate) { _gen++; TokenStore.Delete(); Client = null; Status = "not connected"; }   // first the generation: a refresh in flight must not set its client again
         ResetCaches();
     }
 }
