@@ -91,7 +91,8 @@ internal static class BrightnessCtl
 // ---------------- radios, Wi-Fi networks, Bluetooth devices ----------------
 
 internal sealed record BtDevice(string Name, bool Connected);
-internal sealed record WifiNet(string Ssid, int Signal, bool Secure, bool Connected, bool Saved);
+/// <summary><paramref name="Profile"/>: name of the saved profile (empty when none). It is usually the SSID, but not for profiles pushed by IT or renamed ones.</summary>
+internal sealed record WifiNet(string Ssid, int Signal, bool Secure, bool Connected, bool Saved, string Profile = "");
 
 internal static class RadioCtl
 {
@@ -210,16 +211,18 @@ internal static class WifiCtl
                     var an = Marshal.PtrToStructure<WLAN_AVAILABLE_NETWORK>(lp + 8 + i * size);
                     string ssid = System.Text.Encoding.UTF8.GetString(an.Ssid, 0, (int)Math.Min(32, an.SsidLength));
                     if (ssid.Length == 0) continue;
-                    res.Add(new WifiNet(ssid, (int)an.SignalQuality, an.SecurityEnabled != 0, (an.Flags & 1) != 0, (an.Flags & 2) != 0));
+                    bool saved = (an.Flags & 2) != 0;   // WLAN_AVAILABLE_NETWORK_HAS_PROFILE
+                    res.Add(new WifiNet(ssid, (int)an.SignalQuality, an.SecurityEnabled != 0, (an.Flags & 1) != 0, saved, saved ? an.ProfileName ?? "" : ""));
                 }
             }
             finally { WlanFreeMemory(lp); }
         }
         finally { WlanCloseHandle(h, IntPtr.Zero); }
-        return res.GroupBy(w => w.Ssid).Select(g => g.OrderByDescending(x => x.Connected).ThenByDescending(x => x.Signal).First()).OrderByDescending(w => w.Connected).ThenByDescending(w => w.Signal).ToList();
+        // a network with a profile is listed once with and once without it: keep the entry with the profile
+        return res.GroupBy(w => w.Ssid).Select(g => g.OrderByDescending(x => x.Connected).ThenByDescending(x => x.Saved).ThenByDescending(x => x.Signal).First()).OrderByDescending(w => w.Connected).ThenByDescending(w => w.Signal).ToList();
     }
 
-    /// <summary>Connects to a network that has a saved profile (the profile name equals the SSID for normal networks).</summary>
+    /// <summary>Connects with a saved profile, by its PROFILE name (see <see cref="WifiNet.Profile"/>; not always the SSID).</summary>
     public static bool Connect(string profile)
     {
         if (!Open(out var h, out var iface)) return false;
@@ -227,7 +230,9 @@ internal static class WifiCtl
         try
         {
             var p = new WLAN_CONNECTION_PARAMETERS { Mode = 0 /*profile*/, Profile = name, BssType = 1 /*infrastructure*/ };
-            return WlanConnect(h, ref iface, ref p, IntPtr.Zero) == 0;
+            uint rc = WlanConnect(h, ref iface, ref p, IntPtr.Zero);
+            if (rc != 0) Log.Write("wifi connect failed: error " + rc);
+            return rc == 0;
         }
         finally { Marshal.FreeHGlobal(name); WlanCloseHandle(h, IntPtr.Zero); }
     }

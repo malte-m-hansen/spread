@@ -347,11 +347,12 @@ internal sealed class QuickSettingsPanel
             foreach (var n in nets.Take(10))
             {
                 var net = n;
-                string bars = new string('▂', 0) + (WifiCtl.Bars(n.Signal) switch { 4 => "▂▄▆█", 3 => "▂▄▆ ", 2 => "▂▄  ", 1 => "▂   ", _ => "    " });
+                string bars = WifiCtl.Bars(n.Signal) switch { 4 => "▂▄▆█", 3 => "▂▄▆ ", 2 => "▂▄  ", 1 => "▂   ", _ => "    " };
                 host.Children.Add(Row(n.Ssid, n.Connected ? "Connected" : n.Saved ? "Saved" : n.Secure ? "Secured - connect in Windows" : "Open", n.Connected,
                     n.Connected ? null : () =>
                     {
-                        if (net.Saved) { System.Threading.Tasks.Task.Run(() => WifiCtl.Connect(net.Ssid)).ContinueWith(_ => { System.Threading.Thread.Sleep(2500); UI(() => _ = RefreshRadios()); }); }
+                        string profile = net.Profile.Length > 0 ? net.Profile : net.Ssid;
+                        if (net.Saved) { System.Threading.Tasks.Task.Run(() => WifiCtl.Connect(profile)).ContinueWith(_ => { System.Threading.Thread.Sleep(2500); UI(() => _ = RefreshRadios()); }); }
                         else OpenUri("ms-settings:network-wifi");
                     }, bars));
             }
