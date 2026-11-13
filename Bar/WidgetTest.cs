@@ -71,6 +71,7 @@ internal static class WidgetTest
         Check("teams link: classic meetup-join, ends at whitespace", teams.Match("Join: https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d now").Value == "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d");
         Check("teams link: short /meet/ link inside <...>", teams.Match("<https://teams.microsoft.com/meet/123456789?p=abc>").Value == "https://teams.microsoft.com/meet/123456789?p=abc");
         Check("teams link: personal Teams", teams.IsMatch("https://teams.live.com/meet/9876543210"));
+        Check("outlook: fallback query date is US form whatever the culture", OutlookData.Us(new DateTime(2026, 11, 13, 14, 5, 0)) == "11/13/2026 02:05 PM");
         Check("teams link: channel links and plain http are not join links", !teams.IsMatch("https://teams.microsoft.com/l/channel/19%3aabc/General") && !teams.IsMatch("http://teams.microsoft.com/l/meetup-join/x"));
 
         const string json = """{"current":{"temperature_2m":3.5,"weather_code":0,"is_day":0,"wind_speed_10m":12},"hourly":{"time":["2026-12-21T15:00","2026-12-21T16:00"],"temperature_2m":[2,null],"weather_code":[0,0]},"daily":{"time":["2026-12-21","2026-12-22","2026-12-23"],"temperature_2m_max":[4,5,null],"temperature_2m_min":[1,2,0],"weather_code":[0,3,61],"sunrise":["2026-12-21T08:37","2026-12-22T08:38","2026-12-23T08:38"],"sunset":["2026-12-21T15:38","2026-12-22T15:39","2026-12-23T15:39"]}}""";

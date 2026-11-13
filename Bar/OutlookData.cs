@@ -97,6 +97,8 @@ internal static class OutlookData
     }
 
     static string F(DateTime d) => d.ToString("g", CultureInfo.CurrentCulture);
+    /// <summary>The US form for the fallback query. Formatted with the invariant culture: with the current one (e.g. da-DK) '/' became '-' and AM/PM was empty.</summary>
+    internal static string Us(DateTime d) => d.ToString("MM/dd/yyyy hh:mm tt", CultureInfo.InvariantCulture);
 
     // ---------------- calendar ----------------
 
@@ -120,7 +122,7 @@ internal static class OutlookData
         items.Sort("[Start]");
         dynamic res;
         try { res = items.Restrict($"[Start] <= '{F(to)}' AND [End] >= '{F(from)}'"); }
-        catch { res = items.Restrict($"[Start] <= '{to:MM/dd/yyyy hh:mm tt}' AND [End] >= '{from:MM/dd/yyyy hh:mm tt}'"); }
+        catch { res = items.Restrict($"[Start] <= '{Us(to)}' AND [End] >= '{Us(from)}'"); }
         var list = new List<MeetingItem>();
         int n = 0, bodies = 0;
         var bodyUntil = DateTime.Now.AddDays(2);

@@ -402,7 +402,7 @@ internal static class OutlookProbe
             string F(DateTime d) => d.ToString("g", CultureInfo.CurrentCulture);
             dynamic res;
             try { res = items.Restrict($"[Start] <= '{F(now.AddHours(hours))}' AND [End] >= '{F(now)}'"); }
-            catch { res = items.Restrict($"[Start] <= '{now.AddHours(hours):MM/dd/yyyy hh:mm tt}' AND [End] >= '{now:MM/dd/yyyy hh:mm tt}'"); }
+            catch { res = items.Restrict($"[Start] <= '{OutlookData.Us(now.AddHours(hours))}' AND [End] >= '{OutlookData.Us(now)}'"); }
             var list = new List<Meeting>();
             int n = 0;
             foreach (dynamic it in res)
