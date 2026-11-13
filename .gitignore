@@ -1,0 +1,8 @@
+# build output (each build goes to a fresh bin\nextNN folder)
+bin/
+obj/
+
+# IDE
+.vs/
+*.user
+*.suo
