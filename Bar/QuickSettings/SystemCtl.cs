@@ -42,7 +42,8 @@ internal static class BrightnessCtl
     {
         Connect();
         using var s = new System.Management.ManagementObjectSearcher(Scope, new System.Management.ObjectQuery("SELECT CurrentBrightness FROM WmiMonitorBrightness WHERE Active=TRUE"));
-        foreach (System.Management.ManagementObject o in s.Get()) using (o) return Convert.ToInt32(o["CurrentBrightness"]);
+        using var col = s.Get();   // the collection holds a WMI enumerator too
+        foreach (System.Management.ManagementObject o in col) using (o) return Convert.ToInt32(o["CurrentBrightness"]);
         return null;
     }
 
@@ -78,7 +79,8 @@ internal static class BrightnessCtl
                 {
                     Connect();
                     using var s = new System.Management.ManagementObjectSearcher(Scope, new System.Management.ObjectQuery("SELECT * FROM WmiMonitorBrightnessMethods WHERE Active=TRUE"));
-                    foreach (System.Management.ManagementObject m in s.Get()) using (m) { m.InvokeMethod("WmiSetBrightness", new object[] { (uint)1, (byte)v }); err = null; break; }
+                    using var col = s.Get();
+                    foreach (System.Management.ManagementObject m in col) using (m) { m.InvokeMethod("WmiSetBrightness", new object[] { (uint)1, (byte)v }); err = null; break; }
                 }
                 catch (Exception e) { err = Describe(e); try { Scope.Connect(); } catch { } }
             }
@@ -285,7 +287,8 @@ internal static class ThemeMode
             using var k = Registry.CurrentUser.CreateSubKey(Key);
             k.SetValue("AppsUseLightTheme", dark ? 0 : 1, RegistryValueKind.DWord);
             k.SetValue("SystemUsesLightTheme", dark ? 0 : 1, RegistryValueKind.DWord);
-            SendMessageTimeoutW(new IntPtr(0xFFFF), 0x1A /*WM_SETTINGCHANGE*/, IntPtr.Zero, "ImmersiveColorSet", 2, 200, out _);
+            // a broadcast waits for every top-level window (up to 200 ms each, apps repaint for a theme change): not on the UI thread
+            Task.Run(() => { try { SendMessageTimeoutW(new IntPtr(0xFFFF), 0x1A /*WM_SETTINGCHANGE*/, IntPtr.Zero, "ImmersiveColorSet", 2, 200, out _); } catch { } });
         }
         catch (Exception e) { Log.Write("theme switch failed: " + e.GetType().Name); }
     }
