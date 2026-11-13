@@ -365,7 +365,8 @@ internal static class OutlookProbe
 {
     [DllImport("ole32.dll")] static extern int CLSIDFromProgID([MarshalAs(UnmanagedType.LPWStr)] string progId, out Guid clsid);
     [DllImport("oleaut32.dll")] static extern int GetActiveObject(ref Guid rclsid, IntPtr reserved, [MarshalAs(UnmanagedType.IUnknown)] out object obj);
-    static readonly Regex Teams = new(@"https://teams\.microsoft\.com/l/meetup-join/[^\s<>""']+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // the same link pattern as the clock panel: this one only knew teams.microsoft.com/l/meetup-join/, so the bar had no Join for /meet/ links
+    static Regex Teams => OutlookData.TeamsLink;
 
     /// <summary>Must run on an STA thread. Only attaches to a running Outlook; never starts one. Meeting titles are never logged.</summary>
     public static (List<Meeting>? list, string status) Read(int hours)

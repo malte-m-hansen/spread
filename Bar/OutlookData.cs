@@ -23,7 +23,8 @@ internal static class OutlookData
     [DllImport("ole32.dll")] static extern int CLSIDFromProgID([MarshalAs(UnmanagedType.LPWStr)] string progId, out Guid clsid);
     [DllImport("oleaut32.dll")] static extern int GetActiveObject(ref Guid rclsid, IntPtr reserved, [MarshalAs(UnmanagedType.IUnknown)] out object obj);
 
-    static readonly Regex Teams = new(@"https://teams\.(microsoft|live)\.com/(l/meetup-join|meet)/[^\s<>""']+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    /// <summary>A Teams join link (classic /l/meetup-join/ and the newer short /meet/ links, work and personal Teams). Shared with <see cref="OutlookProbe"/>.</summary>
+    internal static readonly Regex TeamsLink = new(@"https://teams\.(microsoft|live)\.com/(l/meetup-join|meet)/[^\s<>""']+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static readonly BlockingCollection<Action> Queue = new();
     static readonly object CacheLock = new();
     static readonly Dictionary<string, (long at, object value)> Cache = new();
@@ -133,8 +134,8 @@ internal static class OutlookData
                 bool allDay = (bool)it.AllDayEvent;
                 string loc = (string)(it.Location ?? "");
                 string? url = null;
-                var m = Teams.Match(loc);
-                if (!m.Success && !allDay && s < bodyUntil && e > DateTime.Now.AddHours(-12) && bodies < 25) { bodies++; m = Teams.Match((string)(it.Body ?? "")); }
+                var m = TeamsLink.Match(loc);
+                if (!m.Success && !allDay && s < bodyUntil && e > DateTime.Now.AddHours(-12) && bodies < 25) { bodies++; m = TeamsLink.Match((string)(it.Body ?? "")); }
                 if (m.Success) url = m.Value;
                 list.Add(new MeetingItem((string)it.EntryID, (string)(it.Subject ?? "(no title)"), s, e, loc, url, allDay));
             }

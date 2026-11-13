@@ -59,4 +59,19 @@ internal static class WidgetTest
         Line("media", () => { var m = MediaProbe.Read(); return m == null ? "nothing playing" : $"{(m.Playing ? "playing" : "paused")} (title length {m.Title.Length})"; });
         return 0;
     }
+
+    /// <summary>Pure checks of the bar's data logic: no machine probes, no network, synthetic text only. Returns the number of failures.
+    /// Run by `--toast-test` (the offline runner of the bar) until it has a switch of its own.</summary>
+    public static int Offline()
+    {
+        int fail = 0;
+        void Check(string name, bool ok) { Console.WriteLine($"  {(ok ? "ok  " : "FAIL")} {name}"); if (!ok) fail++; }
+        Console.WriteLine("Bar data checks (offline):");
+        var teams = OutlookData.TeamsLink;
+        Check("teams link: classic meetup-join, ends at whitespace", teams.Match("Join: https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d now").Value == "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d");
+        Check("teams link: short /meet/ link inside <...>", teams.Match("<https://teams.microsoft.com/meet/123456789?p=abc>").Value == "https://teams.microsoft.com/meet/123456789?p=abc");
+        Check("teams link: personal Teams", teams.IsMatch("https://teams.live.com/meet/9876543210"));
+        Check("teams link: channel links and plain http are not join links", !teams.IsMatch("https://teams.microsoft.com/l/channel/19%3aabc/General") && !teams.IsMatch("http://teams.microsoft.com/l/meetup-join/x"));
+        return fail;
+    }
 }

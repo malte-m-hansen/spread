@@ -292,6 +292,7 @@ internal static class ToastTest
         Check("after suppression: back with the time they had left, the waiting one follows", v.Visible.Count == 3 && v.Visible.Where(x => x.Spec.Id != "v3").All(x => Math.Abs(x.Remaining - 5) < 1e-9));
         v.Tick(506.5);
         Check("...and they expire on their remaining time", v.Visible.Count == 1 && v.Visible[0].Spec.Id == "v3");
+        _fail += WidgetTest.Offline();   // the bar's other pure checks have no switch of their own yet
         Console.WriteLine(_fail == 0 ? "TOAST TEST PASSED" : $"TOAST TEST FAILED ({_fail})");
         if (_fail != 0 || !args.Contains("--show")) return _fail == 0 ? 0 : 1;
 
