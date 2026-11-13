@@ -186,10 +186,17 @@ internal static class LoadProbe
             }
             _i = i; _k = k; _u = u; _have = true;
         }
+        var (usedGb, totalGb) = Memory();
+        return (cpu, usedGb, totalGb);
+    }
+
+    /// <summary>Memory used/total in GB only: does not move the CPU baseline (a popover reading it would shorten the widget's next CPU interval).</summary>
+    public static (double usedGb, double totalGb) Memory()
+    {
         var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
         GlobalMemoryStatusEx(ref m);
         double gb = 1024.0 * 1024 * 1024;
-        return (cpu, (m.ullTotalPhys - m.ullAvailPhys) / gb, m.ullTotalPhys / gb);
+        return ((m.ullTotalPhys - m.ullAvailPhys) / gb, m.ullTotalPhys / gb);
     }
 }
 

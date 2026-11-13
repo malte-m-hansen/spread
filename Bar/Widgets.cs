@@ -169,8 +169,8 @@ internal sealed class SystemLoadWidget : BarWidget
     FrameworkElement BuildPopover()
     {
         var sp = new StackPanel();
-        var (cpu, used, total) = LoadProbe.Read();
-        sp.Children.Add(BarUi.Row("CPU", $"{(_hist.Count > 0 ? _hist[^1] : cpu):0}%"));
+        var (used, total) = LoadProbe.Memory();   // not Read(): that would reset the CPU baseline of the next 2 s sample
+        sp.Children.Add(BarUi.Row("CPU", $"{(_hist.Count > 0 ? _hist[^1] : 0):0}%"));
         sp.Children.Add(BarUi.Row("Memory", $"{used:0.0} / {total:0.0} GB"));
         var canvas = new Canvas { Width = 220, Height = 44, Margin = new Thickness(0, 8, 0, 0), Background = new SolidColorBrush(Color.FromArgb(0x18, 255, 255, 255)) };
         var pl = new Polyline { Stroke = new SolidColorBrush(Color.FromRgb(0x6C, 0xB6, 0xFF)), StrokeThickness = 1.6 };
