@@ -97,11 +97,13 @@ Some useful settings:
 | `DisabledWidgets` | `[]` | Widget ids to leave out, e.g. `["wsl", "media"]` |
 | `StackApps` | `["Greenshot"]` | Apps whose windows fold into a photo stack |
 | `Dock.Enabled` | `true` | Show the dock in the overview |
+| `Atlassian.Enabled` | `false` | Show the Jira widget (see below) |
+| `GitHub.Enabled` | `false` | Show the Dependabot widget (see below) |
 | `Search.Everything.Enabled` | `true` | Search files through Everything |
 | `WeatherLocation` | Copenhagen | Name, latitude and longitude for the weather widget |
 | `LogLevel` | `normal` | `normal`, `verbose` or `off` |
 
-The Jira and GitHub widgets are set up from their own panels in the top bar. The Atlassian API token is stored in Windows Credential Manager, never in the config file; GitHub uses your existing `gh` login.
+The Jira and GitHub widgets are off by default. Set `Atlassian.Enabled` or `GitHub.Enabled` to `true` in the config, restart Spread, and fill in your site, board or organisation in the widget's own panel in the top bar. The Atlassian API token is stored in Windows Credential Manager, never in the config file; GitHub uses your existing `gh` login.
 
 ## Privacy
 
@@ -163,3 +165,7 @@ dotnet bin\out\Spread.dll --restore-taskbar
 ```
 
 The tray menu also has "Restore Windows taskbar".
+
+## License
+
+MIT. See [LICENSE](LICENSE).
