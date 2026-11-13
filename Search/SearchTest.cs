@@ -154,6 +154,14 @@ internal static class SearchTest
         Check("ipc: reply decoded (names, folder, size, date, total)", total == 128 && hits.Count == 2 && hits[0].Name == "Quarterly Report.pptx" && hits[0].Dir.EndsWith("Projects") && hits[0].Size == 2_345_678 && Math.Abs((hits[0].Modified - when).TotalSeconds) < 2 && hits[1].IsFolder && hits[1].Size == -1);
         Check("ipc: full path", hits[0].Full == @"C:\Users\x\OneDrive - Contoso\Projects\Quarterly Report.pptx");
         Check("ipc: truncated reply does not throw", EverythingProtocol.DecodeList2(buf.Take(60).ToArray(), out _).Count <= 2 && EverythingProtocol.DecodeList2(new byte[3], out _).Count == 0);
+        {
+            // one item whose name length (0x40000000) overflowed the 32-bit bounds check
+            var bad = new byte[40];
+            foreach (var (at, v) in new[] { (0, 1u), (4, 1u), (12, EverythingProtocol.REQ_NAME), (16, 14u), (20, 0u), (24, 28u), (28, 0x40000000u) }) BitConverter.GetBytes(v).CopyTo(bad, at);
+            int n = -1; bool threw = false;
+            try { n = EverythingProtocol.DecodeList2(bad, out _).Count; } catch { threw = true; }
+            Check("ipc: a huge string length in a reply does not throw", !threw && n == 0);
+        }
 
         foreach (var f in Directory.GetFiles(Path.GetTempPath(), "spread-usage-test-*")) { try { File.Delete(f); } catch { } }
 
