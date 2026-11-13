@@ -47,13 +47,23 @@ internal interface IPolicyConfig
     [PreserveSig] int SetEndpointVisibility();
 }
 
-/// <summary>Output (render) and input (capture) devices: list, default, volume and mute. Call from the UI (STA) thread.</summary>
+/// <summary>
+/// Output (render) and input (capture) devices: list, default, volume and mute. Call from the UI (STA) thread: the COM objects are kept
+/// (one enumerator, the volume endpoint for about 2 s) and belong to the thread that made them. Before, the panel's 1 s refresh and every
+/// mouse move of a slider drag created a new enumerator + device + endpoint.
+/// </summary>
 internal static class AudioCtl
 {
     [DllImport("ole32.dll")] static extern int PropVariantClear(ref PROPVARIANT pv);
     static Guid _ctx = Guid.Empty;
+    static IMMDeviceEnumerator? _en;
+    static readonly IAudioEndpointVolume?[] _ep = new IAudioEndpointVolume?[2];   // [0] output, [1] input
+    static readonly long[] _epAt = new long[2];
+    const int EndpointTtlMs = 2000;   // the default device can change (headset plugged in): look it up again after this
 
-    static IMMDeviceEnumerator Enumerator() => (IMMDeviceEnumerator)new MMDeviceEnumeratorCom();
+    static IMMDeviceEnumerator Enumerator() => _en ??= (IMMDeviceEnumerator)new MMDeviceEnumeratorCom();
+
+    static void Forget(bool capture) => _ep[capture ? 1 : 0] = null;
 
     static string NameOf(IMMDevice dev)
     {
@@ -106,6 +116,7 @@ internal static class AudioCtl
             var pc = (IPolicyConfig)new PolicyConfigClient();
             bool ok = true;
             for (int role = 0; role < 3; role++) ok &= pc.SetDefaultEndpoint(id, role) == 0;
+            Forget(false); Forget(true);   // the sliders follow the new device at once
             return ok;
         }
         catch (Exception e) { Log.Write("set default audio device failed: " + e.GetType().Name); return false; }
@@ -113,13 +124,20 @@ internal static class AudioCtl
 
     static IAudioEndpointVolume? Endpoint(bool capture)
     {
+        int i = capture ? 1 : 0;
+        long now = Environment.TickCount64;
+        if (_ep[i] != null && now - _epAt[i] < EndpointTtlMs) return _ep[i];
+        _ep[i] = null;
         try
         {
-            if (Enumerator().GetDefaultAudioEndpoint(capture ? 1 : 0, capture ? 0 : 1, out var dev) != 0) return null;
+            int hr = Enumerator().GetDefaultAudioEndpoint(capture ? 1 : 0, capture ? 0 : 1, out var dev);
+            if (hr != 0) { if (hr != unchecked((int)0x80070490)) _en = null; return null; }   // E_NOTFOUND = no such device; anything else: start over with a new enumerator
             var iid = typeof(IAudioEndpointVolume).GUID;
-            return dev.Activate(ref iid, 23, IntPtr.Zero, out var o) == 0 ? (IAudioEndpointVolume)o : null;
+            if (dev.Activate(ref iid, 23, IntPtr.Zero, out var o) != 0) return null;
+            _ep[i] = (IAudioEndpointVolume)o; _epAt[i] = now;
+            return _ep[i];
         }
-        catch { return null; }
+        catch { _en = null; return null; }
     }
 
     public static bool TryGet(bool capture, out float level, out bool mute)
@@ -127,10 +145,10 @@ internal static class AudioCtl
         level = 0; mute = false;
         var ep = Endpoint(capture);
         if (ep == null) return false;
-        try { if (ep.GetMasterVolumeLevelScalar(out level) != 0) return false; ep.GetMute(out mute); return true; }
-        catch { return false; }
+        try { if (ep.GetMasterVolumeLevelScalar(out level) != 0) { Forget(capture); return false; } ep.GetMute(out mute); return true; }
+        catch { Forget(capture); return false; }
     }
 
-    public static void SetLevel(bool capture, float level) { try { Endpoint(capture)?.SetMasterVolumeLevelScalar(Math.Clamp(level, 0f, 1f), ref _ctx); } catch { } }
-    public static void SetMute(bool capture, bool mute) { try { Endpoint(capture)?.SetMute(mute, ref _ctx); } catch { } }
+    public static void SetLevel(bool capture, float level) { try { Endpoint(capture)?.SetMasterVolumeLevelScalar(Math.Clamp(level, 0f, 1f), ref _ctx); } catch { Forget(capture); } }
+    public static void SetMute(bool capture, bool mute) { try { Endpoint(capture)?.SetMute(mute, ref _ctx); } catch { Forget(capture); } }
 }
