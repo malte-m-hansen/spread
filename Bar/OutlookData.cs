@@ -27,33 +27,55 @@ internal static class OutlookData
     static readonly BlockingCollection<Action> Queue = new();
     static readonly object CacheLock = new();
     static readonly Dictionary<string, (long at, object value)> Cache = new();
+    /// <summary>Keys of background reads that wait in the queue (not yet started). Guarded by <see cref="CacheLock"/>.</summary>
+    static readonly HashSet<string> Waiting = new();
+    static readonly object StartLock = new();
     static Thread? _thread;
 
+    /// <summary>Started on first use; callers come from the UI thread and from the thread pool, so the start is locked (one worker only).</summary>
     static void Ensure()
     {
-        if (_thread != null) return;
-        _thread = new Thread(() =>
+        lock (StartLock)
         {
-            foreach (var a in Queue.GetConsumingEnumerable())
+            if (_thread != null) return;
+            _thread = new Thread(() =>
             {
-                try { a(); } catch (Exception e) { Log.Write("outlook worker: " + e.GetType().Name); }
-            }
-        }) { IsBackground = true, Name = "Spread Outlook" };
-        _thread.SetApartmentState(ApartmentState.STA);
-        _thread.Start();
+                foreach (var a in Queue.GetConsumingEnumerable())
+                {
+                    long t0 = Environment.TickCount64;
+                    try { a(); } catch (Exception e) { Log.Write("outlook worker: " + e.GetType().Name); }
+                    long ms = Environment.TickCount64 - t0;
+                    if (ms > 15_000) Log.Write($"outlook: a call took {ms / 1000} s (Outlook busy or showing a dialog?)");
+                }
+            }) { IsBackground = true, Name = "Spread Outlook" };
+            _thread.SetApartmentState(ApartmentState.STA);
+            _thread.Start();
+        }
     }
 
-    /// <summary>Runs <paramref name="work"/> on the Outlook thread; <paramref name="done"/> is called on that thread (marshal to the UI yourself).</summary>
-    static void Run<T>(Func<T> work, Action<T> done, T onError)
+    /// <summary>
+    /// Runs <paramref name="work"/> on the Outlook thread; <paramref name="done"/> is called on that thread (marshal to the UI yourself).
+    /// A COM call into a hung Outlook has no timeout, so everything queued behind it waits: a background read whose <paramref name="coalesce"/> key
+    /// is already waiting is dropped (the queue does not grow by one refresh per minute while Outlook hangs), and an interactive action
+    /// (<paramref name="maxWaitMs"/> &gt; 0) that waited longer than that is skipped instead of opening a window minutes after the click.
+    /// </summary>
+    static void Run<T>(Func<T> work, Action<T> done, T onError, string? coalesce = null, int maxWaitMs = 0)
     {
+        if (coalesce != null) lock (CacheLock) { if (!Waiting.Add(coalesce)) return; }
+        long queued = Environment.TickCount64;
         Ensure();
         Queue.Add(() =>
         {
+            if (coalesce != null) lock (CacheLock) Waiting.Remove(coalesce);   // once started, a new request is queued again (this read may miss a change made from now on)
+            long waited = Environment.TickCount64 - queued;
+            if (maxWaitMs > 0 && waited > maxWaitMs) { Log.Write($"outlook: dropped a request that waited {waited / 1000} s"); return; }
             T r;
             try { r = work(); } catch (Exception e) { Log.Write("outlook: " + e.GetType().Name); r = onError; }
             done(r);
         });
     }
+
+    const int ActionMaxWaitMs = 20_000;
 
     static bool TryCache<T>(string key, out T value)
     {
@@ -77,11 +99,12 @@ internal static class OutlookData
 
     // ---------------- calendar ----------------
 
-    public static void Calendar(DateTime from, DateTime to, bool force, Action<CalendarResult> done)
+    /// <param name="background">A periodic refresh: dropped while the same refresh still waits in the queue.</param>
+    public static void Calendar(DateTime from, DateTime to, bool force, Action<CalendarResult> done, bool background = false)
     {
         string key = $"cal-{from:yyyyMMdd}-{to:yyyyMMdd}";
         if (!force && TryCache<CalendarResult>(key, out var hit)) { done(hit); return; }
-        Run(() => { var r = ReadCalendar(from, to); if (r.Status == "ok") Put(key, r); return r; }, done, new CalendarResult(new(), "Outlook could not be read"));
+        Run(() => { var r = ReadCalendar(from, to); if (r.Status == "ok") Put(key, r); return r; }, done, new CalendarResult(new(), "Outlook could not be read"), background ? "bg-" + key : null);
     }
 
     static CalendarResult ReadCalendar(DateTime from, DateTime to)
@@ -122,11 +145,12 @@ internal static class OutlookData
 
     // ---------------- mail ----------------
 
-    public static void Inbox(int top, bool preview, bool force, Action<InboxResult> done)
+    /// <param name="background">A periodic refresh: dropped while the same refresh still waits in the queue.</param>
+    public static void Inbox(int top, bool preview, bool force, Action<InboxResult> done, bool background = false)
     {
         string key = $"inbox-{top}-{preview}";
         if (!force && TryCache<InboxResult>(key, out var hit)) { done(hit); return; }
-        Run(() => { var r = ReadInbox(top, preview); if (r.Status == "ok") Put(key, r); return r; }, done, new InboxResult(0, new(), "Outlook could not be read"));
+        Run(() => { var r = ReadInbox(top, preview); if (r.Status == "ok") Put(key, r); return r; }, done, new InboxResult(0, new(), "Outlook could not be read"), background ? "bg-" + key : null);
     }
 
     static InboxResult ReadInbox(int top, bool preview)
@@ -171,14 +195,55 @@ internal static class OutlookData
             var o = Attach(out _);
             if (o == null) return 0;
             dynamic app = o;
-            dynamic item = app.Session.GetItemFromID(entryId);
-            item.Display();
-            string caption = "";
-            try { caption = (string)item.GetInspector.Caption; } catch { }
-            try { item.GetInspector.Activate(); } catch { }
-            FrontByCaption(caption);
+            Display(app.Session.GetItemFromID(entryId));
             return 0;
-        }, _ => { }, 0);
+        }, _ => { }, 0, null, ActionMaxWaitMs);
+
+    /// <summary>
+    /// Opens a calendar entry. Every occurrence of a recurring meeting carries the series' EntryID, so opening by id alone shows the whole series:
+    /// the occurrence that starts at <paramref name="start"/> is opened instead (a moved occurrence is looked up among the series' exceptions).
+    /// Falls back to the item itself when the occurrence cannot be found.
+    /// </summary>
+    public static void OpenMeeting(string entryId, DateTime start) =>
+        Run(() =>
+        {
+            var o = Attach(out _);
+            if (o == null) return 0;
+            dynamic app = o;
+            dynamic item = app.Session.GetItemFromID(entryId);
+            object? occ = null;
+            try { if ((bool)item.IsRecurring) occ = Occurrence(item, start); }
+            catch (Exception e) { Log.Debug("outlook: occurrence lookup failed: " + e.GetType().Name); }
+            if (occ != null) Display(occ); else Display(item);
+            return 0;
+        }, _ => { }, 0, null, ActionMaxWaitMs);
+
+    static object? Occurrence(dynamic master, DateTime start)
+    {
+        dynamic pattern = master.GetRecurrencePattern();
+        try { return pattern.GetOccurrence(start); } catch { }   // wants the ORIGINAL start: fails for an occurrence that was moved
+        foreach (dynamic ex in pattern.Exceptions)
+        {
+            try
+            {
+                if ((bool)ex.Deleted) continue;
+                dynamic ai = ex.AppointmentItem;
+                if ((DateTime)ai.Start == start) return ai;
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    /// <summary>Shows an item's window; bringing it to the front polls for up to 2 s, so that runs on the thread pool and not on the Outlook thread.</summary>
+    static void Display(dynamic item)
+    {
+        item.Display();
+        string caption = "";
+        try { caption = (string)item.GetInspector.Caption; } catch { }
+        try { item.GetInspector.Activate(); } catch { }
+        if (caption.Length >= 3) System.Threading.Tasks.Task.Run(() => FrontByCaption(caption));
+    }
 
     /// <summary>Outlook opens the message window behind the others (it is not the foreground process): find it by its caption and bring it forward.</summary>
     static void FrontByCaption(string caption)
@@ -207,8 +272,8 @@ internal static class OutlookData
     }
 
     public static void NewMail() =>
-        Run(() => { var o = Attach(out _); if (o != null) { dynamic app = o; app.CreateItem(0).Display(); } return 0; }, _ => { }, 0);
+        Run(() => { var o = Attach(out _); if (o != null) { dynamic app = o; app.CreateItem(0).Display(); } return 0; }, _ => { }, 0, null, ActionMaxWaitMs);
 
     public static void NewMeeting() =>
-        Run(() => { var o = Attach(out _); if (o != null) { dynamic app = o; app.CreateItem(1).Display(); } return 0; }, _ => { }, 0);
+        Run(() => { var o = Attach(out _); if (o != null) { dynamic app = o; app.CreateItem(1).Display(); } return 0; }, _ => { }, 0, null, ActionMaxWaitMs);
 }

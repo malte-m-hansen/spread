@@ -333,7 +333,7 @@ internal sealed class ClockPanel
             join.Margin = new Thickness(6, 0, 0, 0);
             Grid.SetColumn(join, 2); g.Children.Add(join);
         }
-        return Row(g, () => { OutlookData.Open(m.Id); Popover.CloseAny(); });
+        return Row(g, () => { OutlookData.OpenMeeting(m.Id, m.Start); Popover.CloseAny(); });
     }
 
     void RenderAgenda()
