@@ -147,6 +147,12 @@ internal sealed class UsageStore
                 if (pid == 0 || pid == _selfPid) { OnForeground(null); return; }
                 var cls = new StringBuilder(64); Native.GetClassName(h, cls, cls.Capacity);
                 if (cls.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "Windows.UI.Core.CoreWindow") { OnForeground(null); return; }
+                if (cls.ToString() == "ApplicationFrameWindow")
+                {
+                    // a UWP app (Calculator, Photos ...) is hosted by ApplicationFrameHost: count the app in the CoreWindow child, as the window list does
+                    var core = Native.FindWindowEx(h, IntPtr.Zero, "Windows.UI.Core.CoreWindow", null);
+                    if (core != IntPtr.Zero) { Native.GetWindowThreadProcessId(core, out uint p2); if (p2 != 0) pid = p2; }
+                }
                 var hp = Native.OpenProcess(0x1000, false, pid);
                 if (hp == IntPtr.Zero) { OnForeground(null); return; }
                 try
