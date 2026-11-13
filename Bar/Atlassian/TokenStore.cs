@@ -6,11 +6,16 @@ namespace Spread;
 
 /// <summary>
 /// The Atlassian API token lives in Windows Credential Manager (per Windows user), never in the config file or the log.
-/// For tests the environment variable SPREAD_ATLASSIAN_TOKEN is read first.
+/// For tests and scripts the environment variable SPREAD_ATLASSIAN_TOKEN is read first - until Disconnect or Connect is used in this session:
+/// from then on only Credential Manager counts (otherwise Disconnect reconnected at once with the variable's token, and a new token was ignored).
 /// </summary>
 internal static class TokenStore
 {
     const string Target = "Spread/Atlassian";
+    static volatile bool _envOverridden;
+
+    /// <summary>True while the token comes from SPREAD_ATLASSIAN_TOKEN.</summary>
+    public static bool FromEnvironment => !_envOverridden && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SPREAD_ATLASSIAN_TOKEN"));
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct CREDENTIAL
@@ -33,7 +38,7 @@ internal static class TokenStore
     public static string? Load()
     {
         var env = Environment.GetEnvironmentVariable("SPREAD_ATLASSIAN_TOKEN");
-        if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
+        if (!_envOverridden && !string.IsNullOrWhiteSpace(env)) return env.Trim();
         try
         {
             if (!CredRead(Target, 1, 0, out IntPtr p)) return null;
@@ -55,11 +60,19 @@ internal static class TokenStore
         {
             Marshal.Copy(bytes, 0, blob, bytes.Length);
             var c = new CREDENTIAL { Type = 1, TargetName = Target, CredentialBlobSize = (uint)bytes.Length, CredentialBlob = blob, Persist = 2, UserName = "api-token" };
-            return CredWrite(ref c, 0);
+            bool ok = CredWrite(ref c, 0);
+            if (ok) Override();
+            return ok;
         }
         catch { return false; }
         finally { Marshal.FreeHGlobal(blob); }
     }
 
-    public static void Delete() { try { CredDelete(Target, 1, 0); } catch { } }
+    public static void Delete() { Override(); try { CredDelete(Target, 1, 0); } catch { } }
+
+    static void Override()
+    {
+        if (FromEnvironment) Log.Write("atlassian: SPREAD_ATLASSIAN_TOKEN is ignored for the rest of this session (connect/disconnect was used)");
+        _envOverridden = true;
+    }
 }

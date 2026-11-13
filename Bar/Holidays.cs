@@ -25,11 +25,12 @@ internal static class Holidays
         d[e.AddDays(-2)] = "Langfredag";
         d[e] = "Påskedag";
         d[e.AddDays(1)] = "2. påskedag";
+        if (y < 2024) d[e.AddDays(26)] = "Store bededag";   // the calendar can go back to earlier years
         d[e.AddDays(39)] = "Kristi himmelfartsdag";
         d[e.AddDays(49)] = "Pinsedag";
         d[e.AddDays(50)] = "2. pinsedag";
         d[new DateTime(y, 12, 25)] = "Juledag";
         d[new DateTime(y, 12, 26)] = "2. juledag";
-        return d;   // Store bededag was abolished in 2024
+        return d;   // Store bededag was abolished from 2024 on
     }
 }

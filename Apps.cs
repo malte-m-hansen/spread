@@ -19,19 +19,42 @@ internal sealed class AppEntry
     public string Name = "";
     public string AppId = "";
     public ImageSource? Icon;
-    public bool IconTried;
+    /// <summary>Set only after Icon (volatile): the icon preload thread and the UI thread both call EnsureIcon.</summary>
+    public volatile bool IconTried;
 }
 
 internal sealed class AppCatalog
 {
-    List<AppEntry> _all = new();
+    volatile List<AppEntry> _all = new();   // replaced as a whole (from a thread-pool thread), never changed in place
     public int Count => _all.Count;
     public IReadOnlyList<AppEntry> All => _all;
     /// <summary>Tests only: replaces the catalog.</summary>
     public void SetAll(IEnumerable<AppEntry> apps) => _all = apps.ToList();
 
+    static readonly TimeSpan LoadTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// The Start menu's apps from PowerShell's Get-StartApps. Bounded: a PowerShell that hangs (a busy PC at logon) used to leave search without apps
+    /// until Spread restarted; it is now ended after a minute and asked once more.
+    /// </summary>
     public async Task LoadAsync()
     {
+        for (int attempt = 1; attempt <= 2; attempt++)
+        {
+            var list = await ReadStartApps().ConfigureAwait(false);
+            if (list != null && list.Count > 0)
+            {
+                _all = list.GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                Log.Write($"app catalog loaded: {_all.Count} apps");
+                return;
+            }
+            if (attempt == 1) await Task.Delay(5000).ConfigureAwait(false);
+        }
+    }
+
+    static async Task<List<AppEntry>?> ReadStartApps()
+    {
+        Process? p = null;
         try
         {
             var psi = new ProcessStartInfo("powershell.exe",
@@ -39,22 +62,42 @@ internal sealed class AppCatalog
             {
                 RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true, StandardOutputEncoding = Encoding.UTF8
             };
-            using var p = Process.Start(psi);
-            if (p == null) return;
-            string json = await p.StandardOutput.ReadToEndAsync();
-            await p.WaitForExitAsync();
-            using var doc = JsonDocument.Parse(json);
-            var list = new List<AppEntry>();
-            foreach (var e in doc.RootElement.EnumerateArray())
-            {
-                string name = e.GetProperty("Name").GetString() ?? "";
-                string id = e.GetProperty("AppID").GetString() ?? "";
-                if (name.Length > 0 && id.Length > 0) list.Add(new AppEntry { Name = name, AppId = id });
-            }
-            _all = list.GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
-            Log.Write($"app catalog loaded: {_all.Count} apps");
+            p = Process.Start(psi);
+            if (p == null) return null;
+            // the read itself is what hangs with a stuck PowerShell (no EOF): bound it, not just the exit (killing the process ends the read)
+            var read = p.StandardOutput.ReadToEndAsync();
+            if (await Task.WhenAny(read, Task.Delay(LoadTimeout)).ConfigureAwait(false) != read) { Log.Write("app catalog: Get-StartApps did not answer in time"); return null; }
+            var list = ParseStartApps(await read.ConfigureAwait(false));
+            if (list.Count == 0) Log.Write("app catalog: Get-StartApps returned no apps");
+            return list;
         }
-        catch (Exception e) { Log.Write("app catalog failed: " + e.Message); }
+        catch (Exception e) { Log.Write("app catalog failed: " + e.Message); return null; }
+        finally
+        {
+            if (p != null)
+            {
+                try { if (!p.WaitForExit(2000)) p.Kill(entireProcessTree: true); } catch { }
+                p.Dispose();
+            }
+        }
+    }
+
+    /// <summary>ConvertTo-Json writes an array, but a single object when there is exactly one app (and nothing at all for none).</summary>
+    public static List<AppEntry> ParseStartApps(string json)
+    {
+        var list = new List<AppEntry>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        IEnumerable<JsonElement> items = root.ValueKind == JsonValueKind.Array ? root.EnumerateArray() : root.ValueKind == JsonValueKind.Object ? new[] { root } : Array.Empty<JsonElement>();
+        static string Str(JsonElement e, string prop) => e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+        foreach (var e in items)
+        {
+            if (e.ValueKind != JsonValueKind.Object) continue;
+            string name = Str(e, "Name"), id = Str(e, "AppID");
+            if (name.Length > 0 && id.Length > 0) list.Add(new AppEntry { Name = name, AppId = id });
+        }
+        return list;
     }
 
     /// <summary>
@@ -105,24 +148,35 @@ internal sealed class AppCatalog
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
     static extern void SHCreateItemFromParsingName(string path, IntPtr pbc, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItemImageFactory item);
 
+    /// <summary>
+    /// Called by the preload thread and on the UI thread (dock picker). IconTried is set only once the attempt is over: set first, a caller that came
+    /// while the other thread was still extracting got no icon. Two callers at once may both extract; the result is the same frozen image.
+    /// The shell item is released here, on the thread that made it (the preload thread's apartment is gone by the time a finalizer would run).
+    /// </summary>
     public static void EnsureIcon(AppEntry app)
     {
         if (app.IconTried) return;
-        app.IconTried = true;
+        IShellItemImageFactory? f = null;
+        IntPtr hbm = IntPtr.Zero;
         try
         {
             var iid = new Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b");
-            SHCreateItemFromParsingName("shell:AppsFolder\\" + app.AppId, IntPtr.Zero, ref iid, out var f);
+            SHCreateItemFromParsingName("shell:AppsFolder\\" + app.AppId, IntPtr.Zero, ref iid, out f);
             // 0x4 = ICONONLY, 0x1 = BIGGERSIZEOK
-            if (f.GetImage(new SIZE { cx = 64, cy = 64 }, 0x5, out IntPtr hbm) == 0 && hbm != IntPtr.Zero)
+            if (f.GetImage(new SIZE { cx = 64, cy = 64 }, 0x5, out hbm) == 0 && hbm != IntPtr.Zero)
             {
                 var bs = Imaging.CreateBitmapSourceFromHBitmap(hbm, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
                 bs.Freeze();
                 app.Icon = bs;
-                Native.DeleteObject(hbm);
             }
         }
         catch (Exception e) { Log.Write("icon failed for " + app.Name + ": " + e.Message); }
+        finally
+        {
+            if (hbm != IntPtr.Zero) Native.DeleteObject(hbm);
+            if (f != null) { try { Marshal.ReleaseComObject(f); } catch { } }
+            app.IconTried = true;
+        }
     }
 }
 

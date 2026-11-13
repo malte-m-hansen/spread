@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -17,9 +18,12 @@ internal static class GlobalProtectEndpoint
     static readonly Regex Entry = new(@"<gateway>(?<h>[^<]+)</gateway>(?:(?!</entry>).)*?<description>(?<d>[^<]*)</description>", RegexOptions.Singleline | RegexOptions.Compiled);
     static readonly Regex Code = new(@"\b(?<c>[A-Za-z]{2,5})[- ]?(?<n>\d{1,2})\b", RegexOptions.Compiled);
 
+    // Used from worker threads (the bar's network poll and the quick-settings panel) at the same time: the map is built under a lock and
+    // never changed once published; the DNS answers live in a concurrent dictionary.
+    static readonly object MapLock = new();
     static Dictionary<string, string>? _map;
     static long _mapAt;
-    static readonly Dictionary<string, string[]> Dns_ = new(StringComparer.OrdinalIgnoreCase);
+    static readonly ConcurrentDictionary<string, (long at, string[] ips)> Dns_ = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>"HQ-1 - All Traffic" / "1. HQ-1" -> "HQ-1"; anything else -> the description (or the short host name).</summary>
     public static string LabelOf(string description, string host)
@@ -63,32 +67,36 @@ internal static class GlobalProtectEndpoint
 
     static Dictionary<string, string> Map()
     {
-        if (_map != null && Environment.TickCount64 - _mapAt < 300_000) return _map;
-        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        try
+        lock (MapLock)
         {
-            string f = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Palo Alto Networks\GlobalProtect\PanGPA.log");
-            if (File.Exists(f))
+            if (_map != null && Environment.TickCount64 - _mapAt < 300_000) return _map;
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
             {
-                using var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                long take = Math.Min(2_500_000, fs.Length);
-                fs.Seek(-take, SeekOrigin.End);
-                using var sr = new StreamReader(fs);
-                map = ParseGateways(sr.ReadToEnd());
+                string f = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Palo Alto Networks\GlobalProtect\PanGPA.log");
+                if (File.Exists(f))
+                {
+                    using var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    long take = Math.Min(2_500_000, fs.Length);
+                    fs.Seek(-take, SeekOrigin.End);
+                    using var sr = new StreamReader(fs);
+                    map = ParseGateways(sr.ReadToEnd());
+                }
             }
+            catch { }
+            _mapAt = Environment.TickCount64;
+            return _map = map;
         }
-        catch { }
-        _mapAt = Environment.TickCount64;
-        return _map = map;
     }
 
+    /// <summary>Cached DNS answers. A failed lookup (e.g. while the tunnel was coming up) is retried after a minute instead of being kept for good.</summary>
     static IEnumerable<string> Resolver(string host)
     {
-        if (!Dns_.TryGetValue(host, out var ips))
-        {
-            try { ips = System.Net.Dns.GetHostAddresses(host).Select(x => x.ToString()).ToArray(); } catch { ips = Array.Empty<string>(); }
-            Dns_[host] = ips;
-        }
+        long now = Environment.TickCount64;
+        if (Dns_.TryGetValue(host, out var c) && now - c.at < (c.ips.Length > 0 ? 1_800_000 : 60_000)) return c.ips;
+        string[] ips;
+        try { ips = System.Net.Dns.GetHostAddresses(host).Select(x => x.ToString()).ToArray(); } catch { ips = Array.Empty<string>(); }
+        Dns_[host] = (now, ips);
         return ips;
     }
 

@@ -42,7 +42,8 @@ internal static class BrightnessCtl
     {
         Connect();
         using var s = new System.Management.ManagementObjectSearcher(Scope, new System.Management.ObjectQuery("SELECT CurrentBrightness FROM WmiMonitorBrightness WHERE Active=TRUE"));
-        foreach (System.Management.ManagementObject o in s.Get()) using (o) return Convert.ToInt32(o["CurrentBrightness"]);
+        using var col = s.Get();   // the collection holds a WMI enumerator too
+        foreach (System.Management.ManagementObject o in col) using (o) return Convert.ToInt32(o["CurrentBrightness"]);
         return null;
     }
 
@@ -78,7 +79,8 @@ internal static class BrightnessCtl
                 {
                     Connect();
                     using var s = new System.Management.ManagementObjectSearcher(Scope, new System.Management.ObjectQuery("SELECT * FROM WmiMonitorBrightnessMethods WHERE Active=TRUE"));
-                    foreach (System.Management.ManagementObject m in s.Get()) using (m) { m.InvokeMethod("WmiSetBrightness", new object[] { (uint)1, (byte)v }); err = null; break; }
+                    using var col = s.Get();
+                    foreach (System.Management.ManagementObject m in col) using (m) { m.InvokeMethod("WmiSetBrightness", new object[] { (uint)1, (byte)v }); err = null; break; }
                 }
                 catch (Exception e) { err = Describe(e); try { Scope.Connect(); } catch { } }
             }
@@ -91,7 +93,8 @@ internal static class BrightnessCtl
 // ---------------- radios, Wi-Fi networks, Bluetooth devices ----------------
 
 internal sealed record BtDevice(string Name, bool Connected);
-internal sealed record WifiNet(string Ssid, int Signal, bool Secure, bool Connected, bool Saved);
+/// <summary><paramref name="Profile"/>: name of the saved profile (empty when none). It is usually the SSID, but not for profiles pushed by IT or renamed ones.</summary>
+internal sealed record WifiNet(string Ssid, int Signal, bool Secure, bool Connected, bool Saved, string Profile = "");
 
 internal static class RadioCtl
 {
@@ -210,16 +213,21 @@ internal static class WifiCtl
                     var an = Marshal.PtrToStructure<WLAN_AVAILABLE_NETWORK>(lp + 8 + i * size);
                     string ssid = System.Text.Encoding.UTF8.GetString(an.Ssid, 0, (int)Math.Min(32, an.SsidLength));
                     if (ssid.Length == 0) continue;
-                    res.Add(new WifiNet(ssid, (int)an.SignalQuality, an.SecurityEnabled != 0, (an.Flags & 1) != 0, (an.Flags & 2) != 0));
+                    bool saved = (an.Flags & 2) != 0;   // WLAN_AVAILABLE_NETWORK_HAS_PROFILE
+                    res.Add(new WifiNet(ssid, (int)an.SignalQuality, an.SecurityEnabled != 0, (an.Flags & 1) != 0, saved, saved ? an.ProfileName ?? "" : ""));
                 }
             }
             finally { WlanFreeMemory(lp); }
         }
         finally { WlanCloseHandle(h, IntPtr.Zero); }
-        return res.GroupBy(w => w.Ssid).Select(g => g.OrderByDescending(x => x.Connected).ThenByDescending(x => x.Signal).First()).OrderByDescending(w => w.Connected).ThenByDescending(w => w.Signal).ToList();
+        return Dedupe(res);
     }
 
-    /// <summary>Connects to a network that has a saved profile (the profile name equals the SSID for normal networks).</summary>
+    /// <summary>One row per SSID, connected first, then by signal. A network with a profile is listed once with and once without it: keep the entry with the profile.</summary>
+    internal static List<WifiNet> Dedupe(IEnumerable<WifiNet> all) =>
+        all.GroupBy(w => w.Ssid).Select(g => g.OrderByDescending(x => x.Connected).ThenByDescending(x => x.Saved).ThenByDescending(x => x.Signal).First()).OrderByDescending(w => w.Connected).ThenByDescending(w => w.Signal).ToList();
+
+    /// <summary>Connects with a saved profile, by its PROFILE name (see <see cref="WifiNet.Profile"/>; not always the SSID).</summary>
     public static bool Connect(string profile)
     {
         if (!Open(out var h, out var iface)) return false;
@@ -227,7 +235,9 @@ internal static class WifiCtl
         try
         {
             var p = new WLAN_CONNECTION_PARAMETERS { Mode = 0 /*profile*/, Profile = name, BssType = 1 /*infrastructure*/ };
-            return WlanConnect(h, ref iface, ref p, IntPtr.Zero) == 0;
+            uint rc = WlanConnect(h, ref iface, ref p, IntPtr.Zero);
+            if (rc != 0) Log.Write("wifi connect failed: error " + rc);
+            return rc == 0;
         }
         finally { Marshal.FreeHGlobal(name); WlanCloseHandle(h, IntPtr.Zero); }
     }
@@ -277,7 +287,8 @@ internal static class ThemeMode
             using var k = Registry.CurrentUser.CreateSubKey(Key);
             k.SetValue("AppsUseLightTheme", dark ? 0 : 1, RegistryValueKind.DWord);
             k.SetValue("SystemUsesLightTheme", dark ? 0 : 1, RegistryValueKind.DWord);
-            SendMessageTimeoutW(new IntPtr(0xFFFF), 0x1A /*WM_SETTINGCHANGE*/, IntPtr.Zero, "ImmersiveColorSet", 2, 200, out _);
+            // a broadcast waits for every top-level window (up to 200 ms each, apps repaint for a theme change): not on the UI thread
+            Task.Run(() => { try { SendMessageTimeoutW(new IntPtr(0xFFFF), 0x1A /*WM_SETTINGCHANGE*/, IntPtr.Zero, "ImmersiveColorSet", 2, 200, out _); } catch { } });
         }
         catch (Exception e) { Log.Write("theme switch failed: " + e.GetType().Name); }
     }

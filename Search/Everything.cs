@@ -72,12 +72,11 @@ internal static class EverythingProtocol
             {
                 if (p + 4 > d.Length) { ok = false; return ""; }
                 int len = (int)BitConverter.ToUInt32(d, p); p += 4;
-                if (len < 0 || p + (len + 1) * 2 > d.Length) { ok = false; return ""; }
+                if (len < 0 || p + (len + 1L) * 2 > d.Length) { ok = false; return ""; }   // long: a length near 2^30 overflowed the check and threw below
                 string s = Encoding.Unicode.GetString(d, p, len * 2); p += (len + 1) * 2;
                 return s;
             }
             long Big() { if (p + 8 > d.Length) { ok = false; return 0; } long v = BitConverter.ToInt64(d, p); p += 8; return v; }
-            uint Dw() { if (p + 4 > d.Length) { ok = false; return 0; } uint v = BitConverter.ToUInt32(d, p); p += 4; return v; }
             if ((req & REQ_NAME) != 0) name = Str();
             if ((req & REQ_PATH) != 0 && ok) dir = Str();
             if ((req & REQ_FULLPATH) != 0 && ok) { var full = Str(); if (name.Length == 0) { name = Path.GetFileName(full); dir = Path.GetDirectoryName(full) ?? ""; } }
@@ -121,23 +120,31 @@ internal sealed class EverythingClient
 
     string WindowClass => "EVERYTHING_TASKBAR_NOTIFICATION" + (string.IsNullOrWhiteSpace(_cfg.InstanceName) ? "" : "_(" + _cfg.InstanceName.Trim() + ")");
 
+    readonly ManualResetEventSlim _ready = new();
+
+    /// <summary>
+    /// Starts the IPC thread once (UI thread only) without waiting for it; QueryAsync waits off the UI thread. Before, a thread that took over 3 s to
+    /// start (busy PC) left _disp null, QueryAsync threw on it and the next query started a second thread. _disp is set last, once the window exists.
+    /// </summary>
     void EnsureThread()
     {
-        if (_disp != null) return;
-        var ready = new ManualResetEventSlim();
+        if (_thread != null) return;
         _thread = new Thread(() =>
         {
-            _disp = Dispatcher.CurrentDispatcher;
-            var p = new HwndSourceParameters("SpreadEverythingIpc") { ParentWindow = new IntPtr(-3) /*HWND_MESSAGE*/, Width = 0, Height = 0, WindowStyle = 0 };
-            _src = new HwndSource(p);
-            _src.AddHook(Hook);
-            _hwnd = _src.Handle;
-            ready.Set();
-            Dispatcher.Run();
+            try
+            {
+                var p = new HwndSourceParameters("SpreadEverythingIpc") { ParentWindow = new IntPtr(-3) /*HWND_MESSAGE*/, Width = 0, Height = 0, WindowStyle = 0 };
+                _src = new HwndSource(p);
+                _src.AddHook(Hook);
+                _hwnd = _src.Handle;
+                _disp = Dispatcher.CurrentDispatcher;
+            }
+            catch (Exception e) { Log.Write("everything ipc window failed: " + e.GetType().Name); }
+            finally { _ready.Set(); }
+            if (_disp != null) Dispatcher.Run();
         }) { IsBackground = true, Name = "Spread Everything IPC" };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
-        ready.Wait(3000);
     }
 
     /// <summary>Everything answers asynchronously: it sends the result to our window (WM_COPYDATA) when the search is done.</summary>
@@ -193,8 +200,11 @@ internal sealed class EverythingClient
         EnsureThread();
         int id = Interlocked.Increment(ref _latest);
         var sw = Stopwatch.StartNew();
+        if (!_ready.IsSet) await Task.Run(() => _ready.Wait(3000)).ConfigureAwait(false);
+        var disp = _disp;
+        if (disp == null) return new EverythingResult(State = EverythingState.Error, 0, new(), sw.ElapsedMilliseconds);
         var sent = new TaskCompletionSource<(EverythingState state, uint reply, TaskCompletionSource<byte[]>? slot)>();
-        _disp!.BeginInvoke(new Action(() =>
+        _ = disp.BeginInvoke(new Action(() =>
         {
             try { sent.SetResult(Send(text, id)); }
             catch (Exception e) { Log.Write("everything: " + e.GetType().Name); sent.SetResult((State = EverythingState.Error, 0, null)); }
@@ -228,12 +238,19 @@ internal sealed class EverythingClient
         return null;
     }
 
-    /// <summary>Starts the Everything client in the background (like at login).</summary>
+    /// <summary>Starts the Everything client in the background (like at login); the configured named instance, which is the one queries go to.</summary>
     public bool Start()
     {
         var exe = FindExe();
         if (exe == null) return false;
-        try { Process.Start(new ProcessStartInfo(exe, "-startup") { UseShellExecute = false }); return true; }
+        try
+        {
+            var psi = new ProcessStartInfo(exe) { UseShellExecute = false };
+            psi.ArgumentList.Add("-startup");
+            if (!string.IsNullOrWhiteSpace(_cfg.InstanceName)) { psi.ArgumentList.Add("-instance"); psi.ArgumentList.Add(_cfg.InstanceName.Trim()); }
+            Process.Start(psi);
+            return true;
+        }
         catch (Exception e) { Log.Write("everything start failed: " + e.GetType().Name); return false; }
     }
 

@@ -27,7 +27,12 @@ internal static class QuickSettingsTest
         var gmap = GlobalProtectEndpoint.ParseGateways(log);
         Check("vpn: portal gateway names parsed", gmap.Count == 3 && gmap["gw-a.vpn.example.com"] == "HQ-1" && gmap["gw-b.vpn.example.com"] == "HQ-2" && gmap["gw-c.vpn.example.com"] == "Singapore", string.Join(",", gmap.Select(kv => kv.Key + "=" + kv.Value)));
         Check("vpn: an entry without description is not mixed up with the next one", !gmap.ContainsKey("gw-d.vpn.example.com"));
-        Check("vpn: label from a host name", GlobalProtectEndpoint.LabelOf("", "gw-a.vpn.example.com") == "gw-a" && GlobalProtectEndpoint.LabelOf("Frankfurt 2 - All Traffic", "x") == "FRANKFURT-2".Substring(0, 0) + GlobalProtectEndpoint.LabelOf("Frankfurt 2 - All Traffic", "x"));
+        Check("vpn: label from a host name", GlobalProtectEndpoint.LabelOf("", "gw-a.vpn.example.com") == "gw-a");
+        // a city name is not a gateway code (the code must be 2-5 letters right before the number); long descriptions are cut
+        Check("vpn: label from a description without a code", GlobalProtectEndpoint.LabelOf("Frankfurt 2 - All Traffic", "x") == "Frankfurt 2 - All Traffic" && GlobalProtectEndpoint.LabelOf("  HQ 3 - Split  ", "x") == "HQ-3"
+              && GlobalProtectEndpoint.LabelOf("A very long gateway description text", "x") == "A very long gateway descrip…", GlobalProtectEndpoint.LabelOf("Frankfurt 2 - All Traffic", "x"));
+        var nets = WifiCtl.Dedupe(new[] { new WifiNet("Home", 60, true, false, false), new WifiNet("Home", 60, true, false, true, "Home (IT)"), new WifiNet("Cafe", 90, false, false, false), new WifiNet("Work", 40, true, true, true, "Work") });
+        Check("wifi: one row per SSID, connected first, the saved entry (with its profile name) wins", nets.Count == 3 && nets[0].Ssid == "Work" && nets[1].Ssid == "Cafe" && nets[2] is { Ssid: "Home", Saved: true, Profile: "Home (IT)" });
         Check("vpn: endpoint by host name", GlobalProtectEndpoint.Resolve("gw-a.vpn.example.com", "", gmap) == "HQ-1");
         Check("vpn: endpoint by IP through DNS", GlobalProtectEndpoint.Resolve("10.1.2.3", "", gmap, h => h.StartsWith("gw-a") ? new[] { "10.1.2.3" } : Array.Empty<string>()) == "HQ-1");
         Check("vpn: unknown address is shown as it is, location is the fallback", GlobalProtectEndpoint.Resolve("192.0.2.9", "", gmap) == "192.0.2.9" && GlobalProtectEndpoint.Resolve("", "Copenhagen", gmap) == "Copenhagen" && GlobalProtectEndpoint.Resolve("", "", gmap) == null);

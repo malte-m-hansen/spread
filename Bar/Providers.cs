@@ -53,14 +53,18 @@ internal static class NetProbe
         try { if (!string.IsNullOrWhiteSpace(vpnMatch)) rx = new Regex(vpnMatch, RegexOptions.IgnoreCase); } catch { }
         foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
         {
-            if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
-            string text = ni.Description + " " + ni.Name;
-            if (rx != null && rx.IsMatch(text)) { vpn = true; vname = ni.Name; continue; }
-            if (ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel || Virtual.IsMatch(text)) continue;
-            bool gateway = ni.GetIPProperties().GatewayAddresses.Any(g => !g.Address.Equals(IPAddress.Any) && !g.Address.Equals(IPAddress.IPv6Any));
-            if (!gateway) continue;
-            string k = ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? "wifi" : "ethernet";
-            if (kind == "none" || (kind == "wifi" && k == "ethernet")) { kind = k; name = ni.Name; }
+            try   // an adapter in an odd state can throw (GetIPProperties): skip it instead of losing the whole read
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                string text = ni.Description + " " + ni.Name;
+                if (rx != null && rx.IsMatch(text)) { vpn = true; vname = ni.Name; continue; }
+                if (ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel || Virtual.IsMatch(text)) continue;
+                bool gateway = ni.GetIPProperties().GatewayAddresses.Any(g => !g.Address.Equals(IPAddress.Any) && !g.Address.Equals(IPAddress.IPv6Any));
+                if (!gateway) continue;
+                string k = ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? "wifi" : "ethernet";
+                if (kind == "none" || (kind == "wifi" && k == "ethernet")) { kind = k; name = ni.Name; }
+            }
+            catch (NetworkInformationException) { }
         }
         if (vpn && rx != null && rx.IsMatch("GlobalProtect") && !vname.StartsWith("GlobalProtect")) vname = "GlobalProtect: " + GlobalProtectEndpoint.Current(GlobalProtectProbe.Status());
         // GlobalProtect with split tunnelling / internal gateway brings no adapter up: ask the agent's own state
@@ -186,10 +190,17 @@ internal static class LoadProbe
             }
             _i = i; _k = k; _u = u; _have = true;
         }
+        var (usedGb, totalGb) = Memory();
+        return (cpu, usedGb, totalGb);
+    }
+
+    /// <summary>Memory used/total in GB only: does not move the CPU baseline (a popover reading it would shorten the widget's next CPU interval).</summary>
+    public static (double usedGb, double totalGb) Memory()
+    {
         var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
         GlobalMemoryStatusEx(ref m);
         double gb = 1024.0 * 1024 * 1024;
-        return (cpu, (m.ullTotalPhys - m.ullAvailPhys) / gb, m.ullTotalPhys / gb);
+        return ((m.ullTotalPhys - m.ullAvailPhys) / gb, m.ullTotalPhys / gb);
     }
 }
 
@@ -250,14 +261,17 @@ internal static class WslProbe
         return (false, 0);
     }
 
+    /// <summary>Running distributions. wsl.exe can hang while the WSL service is stuck: the output is read asynchronously so the 4 s limit really applies.</summary>
     public static string[] RunningDistros()
     {
         try
         {
             var psi = new ProcessStartInfo("wsl.exe", "-l --running") { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true, StandardOutputEncoding = Encoding.Unicode };
             using var p = Process.Start(psi)!;
-            string o = p.StandardOutput.ReadToEnd();
-            if (!p.WaitForExit(4000)) { try { p.Kill(); } catch { } }
+            var read = p.StandardOutput.ReadToEndAsync();
+            if (!p.WaitForExit(4000)) { try { p.Kill(entireProcessTree: true); } catch { } Log.Write("wsl -l --running did not answer within 4 s"); return Array.Empty<string>(); }
+            if (!read.Wait(2000)) return Array.Empty<string>();
+            string o = read.Result;
             return o.Replace("\0", "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Where(l => !l.StartsWith("Windows Subsystem", StringComparison.OrdinalIgnoreCase) && !l.StartsWith("There are no", StringComparison.OrdinalIgnoreCase) && !l.StartsWith("Der er ingen", StringComparison.OrdinalIgnoreCase))
                 .Select(l => l.Replace("(Default)", "").Trim()).Where(l => l.Length > 0).ToArray();
@@ -267,7 +281,7 @@ internal static class WslProbe
 
     public static void Shutdown()
     {
-        try { Process.Start(new ProcessStartInfo("wsl.exe", "--shutdown") { UseShellExecute = false, CreateNoWindow = true }); }
+        try { Process.Start(new ProcessStartInfo("wsl.exe", "--shutdown") { UseShellExecute = false, CreateNoWindow = true })?.Dispose(); }
         catch (Exception e) { Log.Write("wsl --shutdown failed: " + e.Message); }
     }
 }
@@ -275,7 +289,7 @@ internal static class WslProbe
 // ---------------- weather (Open-Meteo, no key) ----------------
 
 internal sealed record WeatherHour(DateTime Time, double Temp, int Code);
-internal sealed record WeatherDay(DateTime Date, double Max, double Min, int Code);
+internal sealed record WeatherDay(DateTime Date, double Max, double Min, int Code, DateTime? Sunrise = null, DateTime? Sunset = null);
 internal sealed record WeatherData(double Temp, int Code, bool IsDay, double Wind, List<WeatherHour> Hours, List<WeatherDay> Days, DateTime? Sunrise = null, DateTime? Sunset = null);
 
 internal static class WeatherProbe
@@ -314,20 +328,30 @@ internal static class WeatherProbe
             var days = new List<WeatherDay>();
             var d = r.GetProperty("daily");
             var dt = d.GetProperty("time"); var dMax = d.GetProperty("temperature_2m_max"); var dMin = d.GetProperty("temperature_2m_min"); var dC = d.GetProperty("weather_code");
-            for (int i = 0; i < dt.GetArrayLength(); i++)
-                if (DateTime.TryParse(dt[i].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var t))
-                    days.Add(new WeatherDay(t, dMax[i].GetDouble(), dMin[i].GetDouble(), dC[i].GetInt32()));
-            DateTime? sr = null, ss = null;
-            try
+            d.TryGetProperty("sunrise", out var srA); d.TryGetProperty("sunset", out var ssA);
+            DateTime? At(JsonElement arr, int i)
             {
-                if (d.TryGetProperty("sunrise", out var srA) && DateTime.TryParse(srA[0].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var a)) sr = a;
-                if (d.TryGetProperty("sunset", out var ssA) && DateTime.TryParse(ssA[0].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var b)) ss = b;
+                try { return arr.ValueKind == JsonValueKind.Array && i < arr.GetArrayLength() && DateTime.TryParse(arr[i].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var x) ? x : null; }
+                catch { return null; }
             }
-            catch { }
+            for (int i = 0; i < dt.GetArrayLength(); i++)
+                if (DateTime.TryParse(dt[i].GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var t)
+                    && dMax[i].ValueKind == JsonValueKind.Number && dMin[i].ValueKind == JsonValueKind.Number && dC[i].ValueKind == JsonValueKind.Number)   // a day without values is left out instead of failing the whole forecast
+                    days.Add(new WeatherDay(t, dMax[i].GetDouble(), dMin[i].GetDouble(), dC[i].GetInt32(), At(srA, i), At(ssA, i)));
+            DateTime? sr = At(srA, 0), ss = At(ssA, 0);
             return new WeatherData(cur.GetProperty("temperature_2m").GetDouble(), cur.GetProperty("weather_code").GetInt32(),
                 cur.GetProperty("is_day").GetInt32() == 1, cur.GetProperty("wind_speed_10m").GetDouble(), hours, days, sr, ss);
         }
         catch { return null; }
+    }
+
+    /// <summary>Day or night at <paramref name="t"/> (the location's local time, like the forecast) from that day's sunrise/sunset;
+    /// the fixed 07-20 h rule when the forecast has no sun times for that day. A fixed rule is wrong by hours in Danish winter and summer.</summary>
+    public static bool IsDayAt(WeatherData d, DateTime t)
+    {
+        var day = d.Days.FirstOrDefault(x => x.Date.Date == t.Date);
+        if (day?.Sunrise is { } rise && day.Sunset is { } set && rise < set) return t >= rise && t < set;
+        return t.Hour is >= 7 and < 20;
     }
 
     public static string Glyph(int code, bool day) => code switch
@@ -362,7 +386,8 @@ internal static class OutlookProbe
 {
     [DllImport("ole32.dll")] static extern int CLSIDFromProgID([MarshalAs(UnmanagedType.LPWStr)] string progId, out Guid clsid);
     [DllImport("oleaut32.dll")] static extern int GetActiveObject(ref Guid rclsid, IntPtr reserved, [MarshalAs(UnmanagedType.IUnknown)] out object obj);
-    static readonly Regex Teams = new(@"https://teams\.microsoft\.com/l/meetup-join/[^\s<>""']+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // the same link pattern as the clock panel: this one only knew teams.microsoft.com/l/meetup-join/, so the bar had no Join for /meet/ links
+    static Regex Teams => OutlookData.TeamsLink;
 
     /// <summary>Must run on an STA thread. Only attaches to a running Outlook; never starts one. Meeting titles are never logged.</summary>
     public static (List<Meeting>? list, string status) Read(int hours)
@@ -381,7 +406,7 @@ internal static class OutlookProbe
             string F(DateTime d) => d.ToString("g", CultureInfo.CurrentCulture);
             dynamic res;
             try { res = items.Restrict($"[Start] <= '{F(now.AddHours(hours))}' AND [End] >= '{F(now)}'"); }
-            catch { res = items.Restrict($"[Start] <= '{now.AddHours(hours):MM/dd/yyyy hh:mm tt}' AND [End] >= '{now:MM/dd/yyyy hh:mm tt}'"); }
+            catch { res = items.Restrict($"[Start] <= '{OutlookData.Us(now.AddHours(hours))}' AND [End] >= '{OutlookData.Us(now)}'"); }
             var list = new List<Meeting>();
             int n = 0;
             foreach (dynamic it in res)

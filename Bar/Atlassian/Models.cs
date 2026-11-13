@@ -36,7 +36,8 @@ internal sealed record KeyResultNode(IssueLite Epic, OkrTag Tag, int Children, i
 internal sealed record ObjectiveNode(IssueLite Initiative, OkrTag Tag, List<KeyResultNode> KeyResults);
 internal sealed record OkrSnapshot(List<ObjectiveNode> Objectives, List<KeyResultNode> Other);
 
-internal sealed record ChangeEvent(DateTime When, string Kind, string Key, string Title, string Who, string Detail, bool ForMe, string Url);
+/// <summary><paramref name="WhoId"/>: the author's accountId ("" when unknown), so your own changes are not counted as new for you.</summary>
+internal sealed record ChangeEvent(DateTime When, string Kind, string Key, string Title, string Who, string Detail, bool ForMe, string Url, string WhoId = "");
 internal sealed record ConfItem(string Title, string Kind, string Who, DateTime When, string Excerpt, string Url);
 
 internal sealed record OkrTag(int? Quarter, int? Objective, int? KeyResult, string? Label)
@@ -217,6 +218,14 @@ internal static class AtlassianLogic
         if (open.Count == 0) return "ready to unblock";
         return open.Any(b => b.AssigneeId == null || b.AssigneeId == myId) ? "you can act" : "waiting on others";
     }
+
+    /// <summary>
+    /// The badge "new since your last look": comments, mentions, status/assignee changes and new issues after <paramref name="lastLook"/>, plus Confluence
+    /// mentions; minus what you did yourself (by accountId; Confluence only has the name, as in <see cref="NewAlerts"/>).
+    /// </summary>
+    public static int CountNew(IEnumerable<ChangeEvent> changes, IEnumerable<ConfItem> confMentions, DateTime lastLook, string myId, string myName) =>
+        changes.Count(e => e.When > lastLook && (e.Kind is "mention" or "comment" or "status" or "assignee" or "created") && !(myId.Length > 0 && e.WhoId == myId))
+        + confMentions.Count(m => m.When > lastLook && !(myName.Length > 0 && string.Equals(m.Who, myName, StringComparison.OrdinalIgnoreCase)));
 
     // ----- alerts -----
 

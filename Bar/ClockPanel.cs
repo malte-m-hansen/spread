@@ -239,7 +239,14 @@ internal sealed class ClockPanel
         Grid.SetRow(e, row); Grid.SetColumn(e, col); _grid.Children.Add(e);
     }
 
-    bool OnDay(MeetingItem m, DateTime day) => m.Start.Date <= day.Date && (m.AllDay ? m.End.Date > day.Date : m.End.Date >= day.Date);
+    /// <summary>Is the entry on that day? An all-day entry ends at 00:00 of the day after it. A timed one that ends at exactly 00:00 (19:00-00:00)
+    /// is not on the next day; a zero-length one at 00:00 is on its own day.</summary>
+    internal static bool OnDay(MeetingItem m, DateTime day)
+    {
+        var d = day.Date;
+        if (m.Start.Date > d) return false;
+        return m.AllDay ? m.End.Date > d : m.End > d || m.Start.Date == d;
+    }
 
     Border DayCell(DateTime day, bool inMonth)
     {
@@ -296,11 +303,14 @@ internal sealed class ClockPanel
 
     void LoadCalendar(bool force)
     {
-        var from = _month.AddDays(-8); var to = _month.AddMonths(1).AddDays(8);
+        var month = _month;
+        var from = month.AddDays(-8); var to = month.AddMonths(1).AddDays(8);
         if (!force && from >= _loadedFrom && to <= _loadedTo) return;
         OutlookData.Calendar(from, to, force, res => _ctx.Dispatcher.BeginInvoke(new Action(() =>
         {
             if (_closed) return;
+            // the user moved on to another month while this one was read: a late answer must not replace what is shown (e.g. Nov -> Dec -> back to Nov)
+            if (month != _month) return;
             string sig = res.Status + string.Join(",", res.Items.Select(m => m.Id + m.Start.Ticks));
             bool changed = sig != _agenda.Sig;
             _agenda.Sig = sig;
@@ -333,7 +343,7 @@ internal sealed class ClockPanel
             join.Margin = new Thickness(6, 0, 0, 0);
             Grid.SetColumn(join, 2); g.Children.Add(join);
         }
-        return Row(g, () => { OutlookData.Open(m.Id); Popover.CloseAny(); });
+        return Row(g, () => { OutlookData.OpenMeeting(m.Id, m.Start); Popover.CloseAny(); });
     }
 
     void RenderAgenda()

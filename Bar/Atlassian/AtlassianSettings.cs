@@ -85,7 +85,8 @@ internal static class AtlassianSettings
             {
                 if (string.IsNullOrWhiteSpace(a.Site)) { msg.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8A, 0x80)); msg.Text = "Connect first (site and e-mail are not known yet)."; return; }
                 msg.Foreground = BarUi.Dim; msg.Text = "Checking the new token…";
-                string? err = await AtlassianData.ConnectAsync(cfg, a.Site, AtlassianData.EmailFor(cfg), tokenBox.Password);
+                string email = await System.Threading.Tasks.Task.Run(() => AtlassianData.EmailFor(cfg));   // may run whoami: not on the UI thread
+                string? err = await AtlassianData.ConnectAsync(cfg, a.Site, email, tokenBox.Password);
                 if (err != null) { msg.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8A, 0x80)); msg.Text = "Token not saved: " + err; return; }
                 tokenBox.Clear();
                 Log.Write("atlassian: token replaced");
@@ -111,7 +112,13 @@ internal static class AtlassianSettings
             int.TryParse(board.Text.Trim(), out int b);
             msg.Text = await AtlassianData.TestAsync(cfg, b);
         }));
-        buttons.Children.Add(BarUi.Button("Send test alert", () => { a.Alerts.ToastSeconds = int.TryParse(toastSec.Text.Trim(), out int s) && s >= 3 && s <= 60 ? s : 10; AtlassianData.SendTestAlert(); }));
+        buttons.Children.Add(BarUi.Button("Send test alert", () =>
+        {
+            // the typed duration only for this toast: the config is shared, so setting it for good outlived Cancel (and the next Save of any other setting wrote it)
+            int saved = a.Alerts.ToastSeconds;
+            a.Alerts.ToastSeconds = int.TryParse(toastSec.Text.Trim(), out int s) && s >= 3 && s <= 60 ? s : 10;
+            try { AtlassianData.SendTestAlert(); } finally { a.Alerts.ToastSeconds = saved; }
+        }));
         buttons.Children.Add(BarUi.Button("Disconnect", () => { AtlassianData.Disconnect(); close(); }));
         root.Children.Add(buttons);
         return root;

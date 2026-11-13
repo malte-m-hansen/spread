@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -6,6 +7,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -26,6 +28,7 @@ internal sealed class GitHubToastConfig
 internal sealed class GitHubConfig
 {
     public bool Enabled { get; set; } = true;
+    /// <summary>The API host: api.github.com, or "ghe.example.com/api/v3" for GitHub Enterprise Server. gh and the browser links use the matching web host.</summary>
     public string Host { get; set; } = "api.github.com";
     public string Org { get; set; } = "Contoso";
     /// <summary>Repositories of the team are found with this custom property (org:Contoso props.ProductTeam:TEAM-1).</summary>
@@ -91,7 +94,53 @@ internal static class GitHubLogic
         var parts = new List<string> { "is:open" };
         if (sev.Count > 0) parts.Add("severity:" + string.Join(",", sev));
         if (c.PropertyName.Length > 0 && c.PropertyValue.Length > 0) parts.Add($"props.{c.PropertyName}:{c.PropertyValue}");
-        return $"https://github.com/orgs/{c.Org}/security/alerts/dependabot?q=" + string.Join("+", parts.Select(Uri.EscapeDataString));
+        return $"https://{WebHost(c.Host)}/orgs/{c.Org}/security/alerts/dependabot?q=" + string.Join("+", parts.Select(Uri.EscapeDataString));
+    }
+
+    /// <summary>"https://ghe.example.com:8443/api/v3/" -> ("ghe.example.com", ":8443/api/v3"). Anything that does not look like a host falls back to api.github.com.</summary>
+    static (string host, string rest) SplitHost(string? apiHost)
+    {
+        string h = (apiHost ?? "").Trim();
+        int s = h.IndexOf("://", StringComparison.Ordinal); if (s >= 0) h = h[(s + 3)..];
+        h = h.TrimEnd('/');
+        int cut = h.IndexOfAny(new[] { '/', ':' });
+        string host = cut >= 0 ? h[..cut] : h, rest = cut >= 0 ? h[cut..] : "";
+        if (!Regex.IsMatch(host, @"^[A-Za-z0-9.-]+$")) return ("api.github.com", "");
+        return (host, Regex.IsMatch(rest, @"^(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?$") ? rest : "");
+    }
+
+    /// <summary>The bare host name of the configured API host (no scheme, port or path): what the request guard compares with. "ghe.example.com/api/v3" -> ghe.example.com.</summary>
+    public static string ApiHostName(string? apiHost) => SplitHost(apiHost).host;
+
+    /// <summary>Base of every API url: https:// + the configured host including a GitHub Enterprise Server path (/api/v3), without a trailing slash.</summary>
+    public static string ApiBase(string? apiHost) { var (h, rest) = SplitHost(apiHost); return "https://" + h + rest; }
+
+    /// <summary>The web host for gh (-h) and the links opened in the browser: api.github.com -> github.com, api.X.ghe.com -> X.ghe.com, GitHub Enterprise Server -> its host.</summary>
+    public static string WebHost(string? apiHost)
+    {
+        string h = ApiHostName(apiHost);
+        if (h.Equals("api.github.com", StringComparison.OrdinalIgnoreCase)) return "github.com";
+        if (h.StartsWith("api.", StringComparison.OrdinalIgnoreCase) && h.EndsWith(".ghe.com", StringComparison.OrdinalIgnoreCase)) return h[4..];
+        return h;
+    }
+
+    /// <summary>
+    /// GitHub says "rate limited" with 429, or with a 403 that carries x-ratelimit-remaining: 0, a retry-after header or a "rate limit" message. Such a 403 is not
+    /// "this repository is not readable": counting it as one silently dropped the repository's alerts from an "ok" result. Returns how long to wait, or null.
+    /// </summary>
+    public static TimeSpan? RateLimitWait(int status, string? remaining, string? resetEpoch, TimeSpan? retryAfter, string? body, DateTimeOffset now)
+    {
+        if (status != 403 && status != 429) return null;
+        bool exhausted = remaining?.Trim() == "0";
+        bool limited = status == 429 || retryAfter != null || exhausted || (body?.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ?? false);
+        if (!limited) return null;
+        var wait = retryAfter ?? TimeSpan.Zero;
+        if (exhausted && long.TryParse(resetEpoch?.Trim(), out long reset) && reset > 0 && reset < 253402300799)
+        {
+            var untilReset = DateTimeOffset.FromUnixTimeSeconds(reset) - now;
+            if (untilReset > wait) wait = untilReset;
+        }
+        return wait < TimeSpan.FromMinutes(1) ? TimeSpan.FromMinutes(1) : wait > TimeSpan.FromHours(1) ? TimeSpan.FromHours(1) : wait;
     }
 
     public static int Count(IEnumerable<AlertLite> alerts, IEnumerable<string> severities) =>
@@ -159,6 +208,8 @@ internal static class GitHubLogic
 internal static class GitHubAuth
 {
     static string? _token;
+    static long _tokenAt;
+    static readonly object Gate = new();
 
     public static string? FindGh(GitHubConfig c)
     {
@@ -172,26 +223,30 @@ internal static class GitHubAuth
         return null;
     }
 
-    /// <summary>Token for api.github.com: environment (tests), then `gh auth token` (kept in memory only), then a stored personal access token.</summary>
+    /// <summary>
+    /// Token for the configured host: environment (tests), then `gh auth token` (kept in memory only; Spread stores no GitHub token). One gh at a time:
+    /// the parallel repository requests that all got a 401 share one refresh instead of starting gh four times.
+    /// </summary>
     public static string? Token(GitHubConfig c, bool refresh = false)
     {
         var env = Environment.GetEnvironmentVariable("SPREAD_GITHUB_TOKEN");
         if (!string.IsNullOrWhiteSpace(env)) return env.Trim();
-        if (_token != null && !refresh) return _token;
-        var gh = FindGh(c);
-        if (gh != null)
+        lock (Gate)
         {
-            try
+            if (_token != null && (!refresh || Environment.TickCount64 - _tokenAt < 5000)) return _token;
+            var gh = FindGh(c);
+            if (gh != null)
             {
-                var psi = new ProcessStartInfo(gh, "auth token -h github.com") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-                using var p = Process.Start(psi)!;
-                string o = p.StandardOutput.ReadToEnd().Trim();
-                if (!p.WaitForExit(6000)) { try { p.Kill(); } catch { } return _token = null; }
-                if (p.ExitCode == 0 && o.Length > 20) return _token = o;
+                try
+                {
+                    var r = ConsoleTool.Run(gh, new[] { "auth", "token", "-h", GitHubLogic.WebHost(c.Host) }, 6000);
+                    if (r == null) Log.Write("gh token: gh did not answer in time");
+                    else if (r.Value.exit == 0 && r.Value.output.Length > 20) { _tokenAt = Environment.TickCount64; return _token = r.Value.output; }
+                }
+                catch (Exception e) { Log.Write("gh token failed: " + e.GetType().Name); }
             }
-            catch (Exception e) { Log.Write("gh token failed: " + e.GetType().Name); }
+            return _token = null;
         }
-        return _token = null;
     }
 
     public static bool HasGh(GitHubConfig c) => FindGh(c) != null;
@@ -215,13 +270,16 @@ internal sealed class GitHubClient
 
     readonly HttpClient _http;
     readonly GitHubConfig _cfg;
-    readonly Dictionary<string, (string etag, List<JsonElement> items, string? next)> _etags = new();
+    /// <summary>Concurrent: the repositories are fetched four at a time through one client (a plain Dictionary can corrupt itself under parallel writes).</summary>
+    readonly ConcurrentDictionary<string, (string etag, List<JsonElement> items, string? next)> _etags = new();
     public int RateRemaining { get; private set; } = -1;
+    /// <summary>For the GET-only checks in --github-test.</summary>
+    internal HttpClient HttpForTests => _http;
 
     public GitHubClient(GitHubConfig cfg, HttpMessageHandler? inner = null)
     {
         _cfg = cfg;
-        _http = inner != null ? new HttpClient(inner) : new HttpClient(new GetOnlyHandler(cfg.Host));
+        _http = inner != null ? new HttpClient(inner) : new HttpClient(new GetOnlyHandler(GitHubLogic.ApiHostName(cfg.Host)));
         _http.Timeout = TimeSpan.FromSeconds(20);
         _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Spread", "1"));
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
@@ -242,7 +300,7 @@ internal sealed class GitHubClient
     public async Task<List<JsonElement>> GetAllAsync(string path, string? itemsProperty = null, int maxPages = 6)
     {
         var all = new List<JsonElement>();
-        string? url = path.StartsWith("http") ? path : $"https://{_cfg.Host}{path}";
+        string? url = path.StartsWith("http") ? path : GitHubLogic.ApiBase(_cfg.Host) + path;
         for (int page = 0; url != null && page < maxPages; page++)
         {
             _etags.TryGetValue(url, out var cached);
@@ -250,9 +308,17 @@ internal sealed class GitHubClient
             if (resp.StatusCode == HttpStatusCode.Unauthorized) { resp.Dispose(); resp = await SendAsync(url, null, true).ConfigureAwait(false); }   // gh may have refreshed its token
             using (resp)
             {
-                if (resp.Headers.TryGetValues("X-RateLimit-Remaining", out var rl) && int.TryParse(rl.FirstOrDefault(), out int rem)) RateRemaining = rem;
+                string? Header(string name) => resp.Headers.TryGetValues(name, out var v) ? v.FirstOrDefault() : null;
+                if (int.TryParse(Header("X-RateLimit-Remaining"), out int rem)) RateRemaining = rem;
                 if (resp.StatusCode == HttpStatusCode.NotModified && cached.items != null) { all.AddRange(cached.items); url = cached.next; continue; }
-                if (!resp.IsSuccessStatusCode) throw new GitHubException((int)resp.StatusCode, "HTTP " + (int)resp.StatusCode);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    int code = (int)resp.StatusCode;
+                    var ra = resp.Headers.RetryAfter;
+                    TimeSpan? retryAfter = ra?.Delta ?? (ra?.Date is { } d ? d - DateTimeOffset.UtcNow : (TimeSpan?)null);
+                    string? body = code == 403 ? await resp.Content.ReadAsStringAsync().ConfigureAwait(false) : null;   // only searched for "rate limit", never logged
+                    throw new GitHubException(code, "HTTP " + code, GitHubLogic.RateLimitWait(code, Header("X-RateLimit-Remaining"), Header("X-RateLimit-Reset"), retryAfter, body, DateTimeOffset.UtcNow));
+                }
                 using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync().ConfigureAwait(false));
                 var root = doc.RootElement;
                 var arr = itemsProperty != null && root.TryGetProperty(itemsProperty, out var ip) ? ip : root;
@@ -270,5 +336,70 @@ internal sealed class GitHubClient
 internal sealed class GitHubException : Exception
 {
     public int Status { get; }
-    public GitHubException(int status, string msg) : base(msg) { Status = status; }
+    /// <summary>Set when GitHub is rate limiting: how long to wait before asking again.</summary>
+    public TimeSpan? RetryAfter { get; }
+    public bool RateLimited => RetryAfter != null;
+    public GitHubException(int status, string msg, TimeSpan? retryAfter = null) : base(msg) { Status = status; RetryAfter = retryAfter; }
+}
+
+// ---------------- small helpers (also used by the Atlassian widget) ----------------
+
+/// <summary>
+/// Runs a small console tool (gh, whoami) and returns its exit code and trimmed output, or null when it did not finish in time. Both pipes are drained
+/// asynchronously (a full stderr pipe would otherwise block the tool), and a tool that hangs (gh waiting on a keyring, whoami on a domain controller) is
+/// killed with its children: reading stdout to the end before waiting made the timeout useless and left the background refresh stuck for good.
+/// </summary>
+internal static class ConsoleTool
+{
+    public static (int exit, string output)? Run(string exe, IEnumerable<string> args, int timeoutMs)
+    {
+        var psi = new ProcessStartInfo(exe) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi);
+        if (p == null) return null;
+        var output = p.StandardOutput.ReadToEndAsync();
+        _ = p.StandardError.ReadToEndAsync();   // drained, not used
+        if (!p.WaitForExit(timeoutMs) || !output.Wait(1000))   // the second wait: a child that inherited the pipe can keep it open after the tool exits
+        {
+            try { p.Kill(entireProcessTree: true); } catch { }
+            return null;
+        }
+        return (p.ExitCode, output.Result.Trim());
+    }
+}
+
+/// <summary>The small state files (ids and timestamps only).</summary>
+internal static class StateFile
+{
+    /// <summary>
+    /// Write to a temporary file, flush it to disk, then replace: a crash or power cut mid-write leaves the previous file instead of a truncated one
+    /// (a corrupt GitHub state re-seeds silently and so swallows the toast of an alert that appeared meanwhile).
+    /// </summary>
+    public static void Write(string path, string text)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        string tmp = path + ".tmp";
+        using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            fs.Write(Encoding.UTF8.GetBytes(text));
+            fs.Flush(flushToDisk: true);
+        }
+        File.Move(tmp, path, overwrite: true);
+    }
+
+    /// <summary>
+    /// The ids to keep, oldest first: every id in <paramref name="keep"/> (for GitHub the alerts open now: dropping one of those announced it again on the next
+    /// refresh once more than <paramref name="max"/> were open), then the most recent others up to <paramref name="max"/>. The order comes from the list; the
+    /// order of a HashSet is undefined.
+    /// </summary>
+    public static List<string> Remember(IEnumerable<string> previous, IEnumerable<string> keep, int max)
+    {
+        var order = new List<string>();
+        var known = new HashSet<string>();
+        var must = new HashSet<string>(keep);
+        foreach (var id in previous.Concat(must)) if (known.Add(id)) order.Add(id);
+        var others = order.Where(id => !must.Contains(id)).ToList();
+        var recent = new HashSet<string>(others.Skip(Math.Max(0, others.Count - Math.Max(0, max - must.Count))));
+        return order.Where(id => must.Contains(id) || recent.Contains(id)).ToList();
+    }
 }

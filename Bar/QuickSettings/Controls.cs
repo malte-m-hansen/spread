@@ -80,8 +80,11 @@ internal sealed class SliderBar : Grid
         Children.Add(_track); Children.Add(_fill); Children.Add(_thumb);
         SizeChanged += (_, _) => Layout();
         MouseLeftButtonDown += (_, e) => { _drag = true; CaptureMouse(); FromMouse(e); e.Handled = true; };
-        MouseMove += (_, e) => { if (_drag) FromMouse(e); };
+        MouseMove += (_, e) => { if (_drag && e.LeftButton == MouseButtonState.Pressed) FromMouse(e); };
         MouseLeftButtonUp += (_, e) => { if (_drag) { _drag = false; ReleaseMouseCapture(); Released?.Invoke(); } e.Handled = true; };
+        // the capture can be taken away mid-drag (Win+L, UAC, another window): the button-up then goes elsewhere, the slider stayed in drag mode
+        // and merely moving the pointer over it changed the volume (and the 1 s refresh no longer moved it)
+        LostMouseCapture += (_, _) => { if (_drag) { _drag = false; Released?.Invoke(); } };
     }
 
     public bool Dragging => _drag;

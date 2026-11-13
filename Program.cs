@@ -29,6 +29,8 @@ internal static class Program
         if (args.Contains("--search-test")) return SearchTest.Run(args);
         if (args.Contains("--github-test")) return GitHubTest.Run(args);
         if (args.Contains("--log-test")) return LogTest.Run();
+        if (args.Contains("--core-test")) return CoreTest.Run();
+        if (args.Contains("--bar-test")) { int f = WidgetTest.Offline(); Console.WriteLine(f == 0 ? "BAR TEST PASSED" : $"BAR TEST FAILED ({f})"); return f == 0 ? 0 : 1; }
         if (args.Contains("--dock-test")) return DockTest.Run(args);
         if (args.Contains("--quicksettings-test")) return QuickSettingsTest.Run(args);
         if (args.Contains("--capture-test")) return SnapshotCache.ProbeMinimized();
@@ -53,6 +55,11 @@ internal static class Program
         if (dumpIdx >= 0 && dumpIdx + 1 < args.Length) return LayoutDump(args[dumpIdx + 1]);
 
         using var mutex = new Mutex(true, @"Local\Spread.Overview.Mutex", out bool first);
+        if (!first && args.Contains("--restarted"))
+        {
+            first = AcquireAfterRestart(mutex, TimeSpan.FromSeconds(20));
+            if (!first) Log.Write("restart: the previous instance did not exit within 20 s; this one ends");
+        }
         var toggle = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\Spread.Overview.Toggle");
         if (!first)
         {
@@ -189,19 +196,33 @@ internal static class Program
         if (on) k.SetValue("Spread", LaunchCommand()); else k.DeleteValue("Spread", false);
     }
 
+    /// <summary>
+    /// Started by <see cref="Restart"/>: the old instance is still shutting down. Wait for it to let go of the single-instance lock
+    /// (an abandoned lock - the old process was ended by force - is ours just the same).
+    /// </summary>
+    internal static bool AcquireAfterRestart(Mutex mutex, TimeSpan wait)
+    {
+        try { return mutex.WaitOne(wait); }
+        catch (AbandonedMutexException) { return true; }
+    }
+
     /// <summary>Quits Spread the normal way (the bar gives its space back and the Windows taskbar returns).</summary>
     internal static void Quit() => System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => System.Windows.Application.Current.Shutdown()));
 
-    /// <summary>Starts a new Spread a few seconds from now (after this one has let go of its single-instance lock) and quits this one.</summary>
+    /// <summary>
+    /// Starts a new Spread with "--restarted" (it waits until this one has let go of its single-instance lock) and quits this one.
+    /// It used to delay the start with "timeout /t 3", but timeout needs a console and fails at once in a hidden cmd: the new
+    /// instance then found the lock still taken and exited, and Restart only quit Spread.
+    /// </summary>
     internal static void Restart()
     {
         try
         {
             string host = Environment.ProcessPath ?? "";
             string start = System.IO.Path.GetFileNameWithoutExtension(host).Equals("dotnet", StringComparison.OrdinalIgnoreCase)
-                ? $"start \"\" /min \"{host}\" \"{typeof(Program).Assembly.Location}\""
-                : $"start \"\" \"{host}\"";
-            Process.Start(new ProcessStartInfo("cmd.exe", $"/c timeout /t 3 /nobreak >nul & {start}") { UseShellExecute = false, CreateNoWindow = true });
+                ? $"start \"\" /min \"{host}\" \"{typeof(Program).Assembly.Location}\" --restarted"
+                : $"start \"\" \"{host}\" --restarted";
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/c {start}") { UseShellExecute = false, CreateNoWindow = true });
         }
         catch (Exception e) { Log.Write("restart failed: " + e.GetType().Name); return; }
         Quit();

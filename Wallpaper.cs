@@ -129,9 +129,30 @@ internal static class Wallpaper
             var dimmed = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgr32, null, px, stride);
             dimmed.Freeze();
             Images[key] = (stamp, dimmed);
+            Evict(Images, key, MaxCached);
             Log.Write($"wallpaper cached (dimmed): {iw}x{ih} -> {w}x{h}");
         }
         catch (Exception e) { Log.Write("wallpaper load failed: " + e.Message); }
         finally { Loading.TryRemove(key, out _); }
+    }
+
+    const int MaxCached = 3;
+
+    /// <summary>
+    /// Each cached copy is a full-screen bitmap (25-65 MB). An older wallpaper for the same monitor geometry is never needed again
+    /// (slideshow, Spotlight, a new picture), so it goes; beyond <see cref="MaxCached"/> geometries (docking stations, projectors)
+    /// the others go too. Without this the cache only ever grew.
+    /// </summary>
+    internal static void Evict<T>(ConcurrentDictionary<string, T> images, string keep, int max)
+    {
+        int bar = keep.IndexOf('|');
+        string geometry = bar >= 0 ? keep[bar..] : "\0";   // "|WxH|position"
+        foreach (var k in images.Keys)
+            if (k != keep && k.EndsWith(geometry, StringComparison.Ordinal)) images.TryRemove(k, out _);
+        foreach (var k in images.Keys)
+        {
+            if (images.Count <= max) break;
+            if (k != keep) images.TryRemove(k, out _);
+        }
     }
 }
