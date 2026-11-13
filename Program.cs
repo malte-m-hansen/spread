@@ -30,6 +30,7 @@ internal static class Program
         if (args.Contains("--github-test")) return GitHubTest.Run(args);
         if (args.Contains("--log-test")) return LogTest.Run();
         if (args.Contains("--core-test")) return CoreTest.Run();
+        if (args.Contains("--bar-test")) { int f = WidgetTest.Offline(); Console.WriteLine(f == 0 ? "BAR TEST PASSED" : $"BAR TEST FAILED ({f})"); return f == 0 ? 0 : 1; }
         if (args.Contains("--dock-test")) return DockTest.Run(args);
         if (args.Contains("--quicksettings-test")) return QuickSettingsTest.Run(args);
         if (args.Contains("--capture-test")) return SnapshotCache.ProbeMinimized();
