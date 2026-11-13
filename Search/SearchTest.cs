@@ -104,6 +104,12 @@ internal static class SearchTest
             Check("usage.json is replaced through a temporary file (none left behind)", File.Exists(tmp + ".6") && !File.Exists(tmp + ".6.tmp") && new UsageStore(cfg, tmp + ".6", () => clock).ScoreOf("setting:bluetooth") > 0.9);
         }
 
+        // ---- app catalog: Get-StartApps | ConvertTo-Json ----
+        var single = AppCatalog.ParseStartApps("{\"Name\":\"3D Viewer\",\"AppID\":\"Microsoft.Microsoft3DViewer_8wekyb3d8bbwe!Microsoft.Microsoft3DViewer\"}");
+        var many = AppCatalog.ParseStartApps("[{\"Name\":\"Calculator\",\"AppID\":\"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App\"},{\"Name\":\"Edge\",\"AppID\":\"MSEdge\"},{\"Name\":null,\"AppID\":\"x\"},{\"AppID\":\"y\"},3]");
+        Check("catalog: a single app (ConvertTo-Json writes an object, not an array)", single.Count == 1 && single[0].Name == "3D Viewer");
+        Check("catalog: many apps; entries without a name or id are skipped; no output = no apps", many.Count == 2 && many[1].AppId == "MSEdge" && AppCatalog.ParseStartApps("").Count == 0 && AppCatalog.ParseStartApps("\r\n").Count == 0);
+
         // ---- engine: used-often-first, apps before settings ----
         var catalog = new AppCatalog();
         catalog.SetAll(new[]
