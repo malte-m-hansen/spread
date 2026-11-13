@@ -53,14 +53,18 @@ internal static class NetProbe
         try { if (!string.IsNullOrWhiteSpace(vpnMatch)) rx = new Regex(vpnMatch, RegexOptions.IgnoreCase); } catch { }
         foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
         {
-            if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
-            string text = ni.Description + " " + ni.Name;
-            if (rx != null && rx.IsMatch(text)) { vpn = true; vname = ni.Name; continue; }
-            if (ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel || Virtual.IsMatch(text)) continue;
-            bool gateway = ni.GetIPProperties().GatewayAddresses.Any(g => !g.Address.Equals(IPAddress.Any) && !g.Address.Equals(IPAddress.IPv6Any));
-            if (!gateway) continue;
-            string k = ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? "wifi" : "ethernet";
-            if (kind == "none" || (kind == "wifi" && k == "ethernet")) { kind = k; name = ni.Name; }
+            try   // an adapter in an odd state can throw (GetIPProperties): skip it instead of losing the whole read
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                string text = ni.Description + " " + ni.Name;
+                if (rx != null && rx.IsMatch(text)) { vpn = true; vname = ni.Name; continue; }
+                if (ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel || Virtual.IsMatch(text)) continue;
+                bool gateway = ni.GetIPProperties().GatewayAddresses.Any(g => !g.Address.Equals(IPAddress.Any) && !g.Address.Equals(IPAddress.IPv6Any));
+                if (!gateway) continue;
+                string k = ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? "wifi" : "ethernet";
+                if (kind == "none" || (kind == "wifi" && k == "ethernet")) { kind = k; name = ni.Name; }
+            }
+            catch (NetworkInformationException) { }
         }
         if (vpn && rx != null && rx.IsMatch("GlobalProtect") && !vname.StartsWith("GlobalProtect")) vname = "GlobalProtect: " + GlobalProtectEndpoint.Current(GlobalProtectProbe.Status());
         // GlobalProtect with split tunnelling / internal gateway brings no adapter up: ask the agent's own state
