@@ -1602,7 +1602,9 @@ internal sealed class OverlayWindow : Window
         bool file = _fileSel >= 0 && _fileSel < _files.Count;
         bool any = file || (_sel >= 0 && _sel < _results.Count);
         if (!any) { _keyHint.Visibility = Visibility.Collapsed; return; }
-        var target = file ? KeyTarget.File : (_results[_sel].Kind == SearchKind.App ? KeyTarget.App : KeyTarget.App);
+        // a Windows setting or tool has no "new window" etc.: Ctrl/Shift/Alt do nothing there, so the hint must not offer them
+        if (!file && _results[_sel].Kind != SearchKind.App) { _keyHint.Text = "Enter / click: open"; _keyHint.Visibility = Visibility.Visible; return; }
+        var target = file ? KeyTarget.File : KeyTarget.App;
         _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys);
         _keyHint.Visibility = Visibility.Visible;
     }

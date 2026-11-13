@@ -107,8 +107,9 @@ internal sealed class Config
     public string[] TrayExclude { get; set; } = Array.Empty<string>();
     /// <summary>"hidden": the Windows taskbar is set to auto-hide and its window kept hidden, so touching the screen edge never shows it. "autohide": only the auto-hide setting. "off": untouched. Always restored on exit.</summary>
     public string HideTaskbar { get; set; } = "hidden";
-    public bool TaskbarManaged => HideTaskbar.Equals("autohide", StringComparison.OrdinalIgnoreCase) || HideTaskbar.Equals("hidden", StringComparison.OrdinalIgnoreCase);
-    public bool TaskbarWindowHidden => HideTaskbar.Equals("hidden", StringComparison.OrdinalIgnoreCase);
+    // derived from HideTaskbar: not settings of their own, so they are not written to config.json (editing them there did nothing)
+    [System.Text.Json.Serialization.JsonIgnore] public bool TaskbarManaged => HideTaskbar.Equals("autohide", StringComparison.OrdinalIgnoreCase) || HideTaskbar.Equals("hidden", StringComparison.OrdinalIgnoreCase);
+    [System.Text.Json.Serialization.JsonIgnore] public bool TaskbarWindowHidden => HideTaskbar.Equals("hidden", StringComparison.OrdinalIgnoreCase);
     /// <summary>The overlay is this many pixels narrower than the monitor. A window covering the whole monitor counts as a
     /// fullscreen app: Windows then hides/re-arranges the taskbar and app bars (flicker + a stall a few frames in).</summary>
     public int OverlayInsetPx { get; set; } = 1;
@@ -190,38 +191,78 @@ internal sealed class Config
     public static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Spread");
     public static string FilePath => Path.Combine(Dir, "config.json");
 
+    /// <summary>Hand-edited files may have comments and trailing commas.</summary>
+    static readonly JsonSerializerOptions Opts = new()
+    {
+        PropertyNameCaseInsensitive = true, WriteIndented = true,
+        ReadCommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true
+    };
+
+    /// <summary>
+    /// Set when config.json exists but could not be read (a typo while editing it by hand, or the file was locked). Spread then
+    /// runs with defaults and must not save: the first pin in the dock or settings change would replace the user's file with defaults.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore] public bool LoadFailed { get; private set; }
+
+    string _path = FilePath;   // where Save writes (tests load from a temp folder); a field, so it is not serialized
+
     public void Save()
     {
-        try
-        {
-            Directory.CreateDirectory(Dir);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { PropertyNameCaseInsensitive = true, WriteIndented = true }));
-        }
+        if (LoadFailed) { Log.Write("config not saved: config.json could not be read at start (fix it and restart Spread)"); return; }
+        try { WriteFile(this, _path); }
         catch (Exception e) { Log.Write("config save failed: " + e.Message); }
     }
 
-    public static Config Load()
+    /// <summary>Write to a temporary file, then swap it in: a crash or full disk mid-write never leaves a truncated config.json.</summary>
+    static void WriteFile(Config c, string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        string tmp = path + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(c, Opts));
+        File.Move(tmp, path, true);
+    }
+
+    static string ReadWithRetry(string path)
+    {
+        for (int i = 0; ; i++)
+        {
+            try { return File.ReadAllText(path); }
+            catch (IOException) when (i < 4) { System.Threading.Thread.Sleep(150); }   // an editor may be saving it right now
+        }
+    }
+
+    public static Config Load() => LoadFrom(FilePath);
+
+    internal static Config LoadFrom(string path)
     {
         try
         {
-            Directory.CreateDirectory(Dir);
-            var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true, WriteIndented = true };
-            if (File.Exists(FilePath))
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var opts = Opts;
+            if (File.Exists(path))
             {
-                var loaded = JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath), opts) ?? new Config();
+                Config loaded;
+                try { loaded = JsonSerializer.Deserialize<Config>(ReadWithRetry(path), opts) ?? throw new JsonException("the file holds no settings object"); }
+                catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException)
+                {
+                    string where = e is JsonException je && je.LineNumber != null ? $" (line {je.LineNumber + 1})" : "";
+                    Log.Write($"config.json could not be read{where}: {e.GetType().Name}. Using defaults; the file is left as it is and will not be overwritten.");
+                    return new Config { LoadFailed = true, _path = path };
+                }
+                loaded._path = path;
                 if (loaded.Version < 2)
                 {
                     // v2: the old 150 ms dwell was the previous default, not a deliberate choice.
                     if (loaded.HotEdgeDwellMs == 150) loaded.HotEdgeDwellMs = 40;
                     loaded.Version = 2;
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 3)
                 {
                     // v3: with the taskbar auto-hidden, the bottom edge would also reveal it: the hot corner (GNOME's) is the default now.
                     if (loaded.HotEdge.Equals("bottom", StringComparison.OrdinalIgnoreCase)) loaded.HotEdge = "top-left";
                     loaded.Version = 3;
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 4)
                 {
@@ -229,74 +270,77 @@ internal sealed class Config
                     if (loaded.HotEdge.Equals("top-left", StringComparison.OrdinalIgnoreCase)) loaded.HotEdge = "bottom";
                     if (loaded.HideTaskbar.Equals("autohide", StringComparison.OrdinalIgnoreCase)) loaded.HideTaskbar = "hidden";
                     loaded.Version = 4;
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 5)
                 {
                     // v5: top-bar widgets (new keys get their defaults; the file is rewritten so they are visible)
                     loaded.TrayStrip = false;
                     loaded.Version = 5;
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 6)
                 {
                     // v6: the clipboard button default was a guess (Ctrl+`); this user's Ditto hotkey is Ctrl+Shift+V
                     if (loaded.ClipboardHotkey == "Ctrl+Oem3") loaded.ClipboardHotkey = "Ctrl+Shift+V";
                     loaded.Version = 6;
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 7)
                 {
                     loaded.Version = 7;   // v7: clock panel settings (new keys get their defaults and are written to the file)
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 8)
                 {
                     loaded.Version = 8;   // v8: window stacks in the overview
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 9)
                 {
                     loaded.Version = 9;   // v9: Atlassian section
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 10)
                 {
                     loaded.Version = 10;   // v10: Atlassian alerts + token expiry
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 11)
                 {
                     loaded.Version = 11;   // v11: Search section (settings, frecency, Everything)
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 12)
                 {
                     loaded.Version = 12;   // v12: quick-settings panel
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 13)
                 {
                     loaded.Version = 13;   // v13: GitHub Dependabot shield
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 14)
                 {
                     loaded.Version = 14;   // v14: log level + rotation
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 if (loaded.Version < 15)
                 {
                     loaded.Version = 15;   // v15: dock
-                    File.WriteAllText(FilePath, JsonSerializer.Serialize(loaded, opts));
+                    Persist(loaded);
                 }
                 return loaded;
             }
-            var c = new Config { Version = 15, TrayStrip = false };
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(c, opts));
+            var c = new Config { Version = 15, TrayStrip = false, _path = path };
+            WriteFile(c, path);
             return c;
         }
-        catch (Exception e) { Log.Write("config load failed: " + e.Message); return new Config(); }
+        catch (Exception e) { Log.Write("config load failed: " + e.Message); return new Config { LoadFailed = File.Exists(path), _path = path }; }
+
+        // a migration that cannot be written keeps the migrated settings in memory; the next start tries again
+        static void Persist(Config c) { try { WriteFile(c, c._path); } catch (Exception e) { Log.Write("config migration not saved: " + e.GetType().Name); } }
     }
 }
 

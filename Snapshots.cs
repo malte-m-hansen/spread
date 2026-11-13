@@ -171,18 +171,21 @@ internal sealed class SnapshotCache
         if (cls.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "Windows.UI.Core.CoreWindow") return false;
         Native.GetWindowThreadProcessId(h, out uint pid);
         if (pid == _selfPid) return false;
-        if (!_procNames.TryGetValue(pid, out var name))
+        string? name;
+        lock (_procNames) _procNames.TryGetValue(pid, out name);
+        if (name == null)
         {
             try { name = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch { name = ""; }
-            _procNames[pid] = name;
+            lock (_procNames) { if (_procNames.Count > 500) _procNames.Clear(); _procNames[pid] = name; }   // pids are reused: keep it small
         }
         return !_cfg.ExcludeProcesses.Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>Runs on the capture worker (via <see cref="Note"/>) while the UI thread may be adding names: locked.</summary>
     string ProcOf(IntPtr h)
     {
         Native.GetWindowThreadProcessId(h, out uint pid);
-        return _procNames.TryGetValue(pid, out var n) && n.Length > 0 ? n : "pid" + pid;
+        lock (_procNames) return _procNames.TryGetValue(pid, out var n) && n.Length > 0 ? n : "pid" + pid;
     }
 
     void Note(IntPtr h, string reason, string outcome)

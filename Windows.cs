@@ -129,9 +129,15 @@ internal static class WindowEnumerator
         finally { Native.CloseHandle(hp); }
     }
 
+    /// <summary>Called on the UI thread and from the snapshot sweep's worker (both enumerate windows): the cache is locked.</summary>
     static ImageSource? LoadIcon(string? path)
     {
         if (path == null) return null;
+        lock (IconCache) return LoadIconLocked(path);
+    }
+
+    static ImageSource? LoadIconLocked(string path)
+    {
         if (IconCache.TryGetValue(path, out var cached)) return cached;
         ImageSource? src = null;
         try

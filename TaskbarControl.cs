@@ -70,7 +70,8 @@ internal static class TaskbarControl
     }
 
     /// <summary>Switch the taskbar to auto-hide, and optionally keep its window hidden. Claims nothing it did not change.</summary>
-    public static void Hide(bool hideWindow = false)
+    /// <param name="quiet">Putting the taskbar away again after a reveal: only a verbose log line.</param>
+    public static void Hide(bool hideWindow = false, bool quiet = false)
     {
         try
         {
@@ -83,10 +84,26 @@ internal static class TaskbarControl
             }
             _keepWindowHidden = hideWindow;
             if (hideWindow) HideWindows();
-            Log.Write($"taskbar hidden (autohide, window hidden={hideWindow}; original state {s})");
+            string msg = $"taskbar hidden (autohide, window hidden={hideWindow}; state before Spread {OriginalState()?.ToString() ?? "unknown"})";
+            if (quiet) Log.Debug(msg); else Log.Write(msg);
         }
         catch (Exception e) { Log.Write("taskbar hide failed: " + e.Message); }
     }
+
+    /// <summary>The taskbar state recorded before Spread first switched on auto-hide (null: Spread did not change it, or unreadable).</summary>
+    static uint? OriginalState()
+    {
+        try { return File.Exists(Marker) && uint.TryParse(File.ReadAllText(Marker).Trim(), out uint v) ? v : null; }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Should Restore switch auto-hide off? Only when Spread switched it on: the marker exists and its recorded original state had
+    /// auto-hide off (an unreadable marker counts as "Spread switched it on", the old behaviour). A user who had auto-hide on
+    /// before Spread keeps it. <paramref name="force"/> (tray menu / --restore-taskbar) always makes the taskbar always-visible.
+    /// </summary>
+    internal static bool ShouldClearAutohide(bool force, bool markerExists, uint? original) =>
+        force || (markerExists && (original is not uint o || (o & Native.ABS_AUTOHIDE) == 0));
 
     static bool _revealed;
     public static bool Revealed => _revealed;
@@ -111,7 +128,7 @@ internal static class TaskbarControl
             }
             else
             {
-                Hide(true);
+                Hide(true, quiet: true);
                 Log.Debug("taskbar put away again");
             }
         }
@@ -132,7 +149,7 @@ internal static class TaskbarControl
             if (!IsHiddenBySpread && !force) return false;
             _keepWindowHidden = false;
             uint s = GetState();
-            if ((s & Native.ABS_AUTOHIDE) != 0) SetState(s & ~Native.ABS_AUTOHIDE);
+            if ((s & Native.ABS_AUTOHIDE) != 0 && ShouldClearAutohide(force, File.Exists(Marker), OriginalState())) SetState(s & ~Native.ABS_AUTOHIDE);
             ShowWindows();
             if (File.Exists(Marker)) File.Delete(Marker);
             Log.Write("taskbar restored");
