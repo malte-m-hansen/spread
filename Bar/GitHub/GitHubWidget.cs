@@ -151,7 +151,7 @@ internal static class GitHubMenu
                 g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 g.Children.Add(BarUi.Txt(grp.First().ShortRepo, 13, Brushes.White, FontWeights.Normal));
                 var n = BarUi.Txt(grp.Count().ToString(), 13, Orange, FontWeights.SemiBold); Grid.SetColumn(n, 1); g.Children.Add(n);
-                sp.Children.Add(Row(g, $"https://github.com/{grp.Key}/security/dependabot?q=is%3Aopen+severity%3Ahigh"));
+                sp.Children.Add(Row(g, $"https://{GitHubLogic.WebHost(c.Host)}/{grp.Key}/security/dependabot?q=is%3Aopen+severity%3Ahigh"));
             }
             int more = high.GroupBy(a => a.Repo).Count() - 5;
             if (more > 0) sp.Children.Add(BarUi.Txt($"…and {more} more repositories", 12, BarUi.Dim, FontWeights.Normal).With(t => t.Margin = new Thickness(6, 2, 0, 0)));
