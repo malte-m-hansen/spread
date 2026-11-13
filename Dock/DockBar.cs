@@ -40,12 +40,13 @@ internal sealed class DockBar : Border
     public void Rebuild(IReadOnlyList<DockEntry> entries, DockConfig cfg, double availableDip)
     {
         _row.Children.Clear();
-        // narrow screens: smaller icons (never below 32)
-        double icon = cfg.IconSize;
+        // narrow screens: smaller icons (never below 32, or the configured size if that is smaller). IconSize below 32 made Math.Clamp throw (min > max),
+        // and the exception broke opening the overview; 0 or less gave negative sizes.
+        double icon = Math.Clamp(cfg.IconSize, 16, 256);
         if (entries.Count > 0)
         {
             double perItem = (availableDip - 40) / entries.Count - 16;
-            icon = Math.Clamp(Math.Min(icon, perItem), 32, cfg.IconSize);
+            icon = Math.Clamp(Math.Min(icon, perItem), Math.Min(32, icon), icon);
         }
         IconDip = icon;
         bool separated = false;

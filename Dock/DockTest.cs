@@ -130,6 +130,14 @@ internal static class DockTest
         }
         Check("layout with the dock reserve keeps every preview above the dock", outside == 0, outside + " slots below the area");
 
+        // the bar itself: icon sizes from the config (IconSize below 32 made Math.Clamp throw while the overview opened)
+        {
+            string? err = null; var sizes = new List<double>();
+            foreach (var (size, avail) in new[] { (48, 2000.0), (24, 2000.0), (0, 2000.0), (48, 300.0), (24, 300.0) })
+                try { var bar = new DockBar(); bar.Rebuild(e, new DockConfig { IconSize = size }, avail); sizes.Add(bar.IconDip); } catch (Exception ex) { err = ex.GetType().Name; }
+            Check("dock bar: any IconSize works (48 stays, 24 is kept, 0 becomes 16; narrow screens shrink icons no further than 32)", err == null && sizes.SequenceEqual(new[] { 48.0, 24, 16, 32, 24 }), err ?? string.Join(",", sizes));
+        }
+
         if (args.Contains("--live")) Live();
         Console.WriteLine(_fail == 0 ? "DOCK TEST PASSED" : $"DOCK TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
