@@ -38,7 +38,8 @@ internal sealed class ToastQueue
     public bool Suppressed { get; set; }
 
     readonly List<Entry> _visible = new();   // newest first
-    readonly Queue<ToastSpec> _waiting = new();
+    // the duration is fixed when a toast is queued: one that waited (3 already visible, or suppressed) used to get whatever Seconds said when it appeared
+    readonly Queue<(ToastSpec spec, double seconds)> _waiting = new();
     double _muteUntil = -1, _last = -1;
 
     public IReadOnlyList<Entry> Visible => _visible;
@@ -49,8 +50,8 @@ internal sealed class ToastQueue
     public bool Enqueue(ToastSpec s, double now)
     {
         if (IsMuted(now)) return false;
-        if (_visible.Any(v => v.Spec.Id == s.Id) || _waiting.Any(w => w.Id == s.Id)) return false;
-        _waiting.Enqueue(s);
+        if (_visible.Any(v => v.Spec.Id == s.Id) || _waiting.Any(w => w.spec.Id == s.Id)) return false;
+        _waiting.Enqueue((s, s.Sticky ? (StickySeconds > 0 ? StickySeconds : double.PositiveInfinity) : Seconds));
         return true;
     }
 
@@ -75,8 +76,8 @@ internal sealed class ToastQueue
         }
         while (!Suppressed && _visible.Count < Capacity && _waiting.Count > 0)
         {
-            var next = _waiting.Dequeue();
-            _visible.Insert(0, new Entry { Spec = next, Remaining = next.Sticky ? (StickySeconds > 0 ? StickySeconds : double.PositiveInfinity) : Seconds });
+            var (next, seconds) = _waiting.Dequeue();
+            _visible.Insert(0, new Entry { Spec = next, Remaining = seconds });
             changed = true;
         }
         return changed;
@@ -292,6 +293,12 @@ internal static class ToastTest
         Check("after suppression: back with the time they had left, the waiting one follows", v.Visible.Count == 3 && v.Visible.Where(x => x.Spec.Id != "v3").All(x => Math.Abs(x.Remaining - 5) < 1e-9));
         v.Tick(506.5);
         Check("...and they expire on their remaining time", v.Visible.Count == 1 && v.Visible[0].Spec.Id == "v3");
+        // the duration is the one in force when the toast was queued, also when it has to wait for a free place
+        var w = new ToastQueue { Capacity = 1, Seconds = 10 };
+        w.Enqueue(S("w1"), 0); w.Tick(0);
+        w.Seconds = 4; w.Enqueue(S("w2"), 1);   // waits: the only place is taken
+        w.Seconds = 30; w.Tick(10.5);
+        Check("a waiting toast keeps the duration it was queued with", w.Visible.Count == 1 && w.Visible[0].Spec.Id == "w2" && Math.Abs(w.Visible[0].Remaining - 4) < 1e-9);
         Console.WriteLine(_fail == 0 ? "TOAST TEST PASSED" : $"TOAST TEST FAILED ({_fail})");
         if (_fail != 0 || !args.Contains("--show")) return _fail == 0 ? 0 : 1;
 

@@ -128,9 +128,9 @@ internal static class OutlookData
         var bodyUntil = DateTime.Now.AddDays(2);
         foreach (dynamic it in res)
         {
-            if (++n > 300) break;
             try
             {
+                if (++n > 300) break;
                 if ((int)it.BusyStatus == 0 && !(bool)it.AllDayEvent) continue;   // "free" timed entries are not meetings
                 DateTime s = it.Start, e = it.End;
                 bool allDay = (bool)it.AllDayEvent;
@@ -142,6 +142,7 @@ internal static class OutlookData
                 list.Add(new MeetingItem((string)it.EntryID, (string)(it.Subject ?? "(no title)"), s, e, loc, url, allDay));
             }
             catch { }
+            finally { Release((object)it); }
         }
         return new CalendarResult(list.OrderBy(x => x.Start).ToList(), "ok");
     }
@@ -173,17 +174,27 @@ internal static class OutlookData
             int n = 0;
             foreach (dynamic it in res)
             {
-                if (++n > top) break;
                 try
                 {
+                    if (++n > top) break;
                     string body = "";
                     if (preview) { body = (string)(it.Body ?? ""); body = Regex.Replace(body, @"\s+", " ").Trim(); if (body.Length > 140) body = body[..140] + "…"; }
                     list.Add(new MailItem((string)it.EntryID, (string)(it.SenderName ?? ""), (string)(it.Subject ?? "(no subject)"), (DateTime)it.ReceivedTime, body));
                 }
                 catch { }
+                finally { Release((object)it); }
             }
         }
         return new InboxResult(unread, list, "ok");
+    }
+
+    /// <summary>
+    /// Each item of a loop is a COM object that otherwise stays open until a garbage collection. Outlook in Exchange online mode refuses to open more than
+    /// a few hundred items at once ("the number of items you can open simultaneously is limited"), and the calendar loop reads up to 300 every 3 minutes.
+    /// </summary>
+    static void Release(object? o)
+    {
+        try { if (o != null && Marshal.IsComObject(o)) Marshal.ReleaseComObject(o); } catch { }
     }
 
     /// <summary>Only the unread count (cheap), for the badge next to the clock.</summary>
