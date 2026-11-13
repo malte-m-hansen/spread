@@ -2023,8 +2023,6 @@ internal sealed class OverlayWindow : Window
 
     void ActivateWindow(Item it) => BeginClose(it.W.Hwnd);
 
-    static string Norm(string s) => new string(s.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
-
     /// <summary>
     /// The topmost window of a running app that matches this start-menu entry, by the dock's rules (AppUserModelID, exe hints, then name): by
     /// process/app name alone a running Edge (msedge), Terminal (WindowsTerminal) or Teams (ms-teams) was not found and got started again.
