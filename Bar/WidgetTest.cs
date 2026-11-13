@@ -89,6 +89,9 @@ internal static class WidgetTest
         Check("agenda: all-day 13-14 Nov (ends 00:00 on the 15th)", !On(allDay, 12) && On(allDay, 13) && On(allDay, 14) && !On(allDay, 15));
         var zero = M(new DateTime(2026, 11, 13), new DateTime(2026, 11, 13));
         Check("agenda: zero-length entry at 00:00 is on its own day", On(zero, 13) && !On(zero, 12) && !On(zero, 14));
+
+        var h23 = Holidays.For("DK", 2023); var h26 = Holidays.For("DK", 2026);
+        Check("holidays: Easter 2026 = 5 April, Store bededag until 2023 (5 May 2023), not from 2024", Holidays.Easter(2026) == new DateTime(2026, 4, 5) && h23.ContainsKey(new DateTime(2023, 5, 5)) && h23.Count == 11 && h26.Count == 10 && !h26.ContainsKey(Holidays.Easter(2026).AddDays(26)));
         return fail;
     }
 }
