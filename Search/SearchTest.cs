@@ -83,6 +83,26 @@ internal static class SearchTest
         var teams = new AppEntry { Name = "Microsoft Teams (work or school)", AppId = "MSTeams_8wekyb3d8bbwe!MSTeams" };
         Check("key matches by exe name", UsageStore.KeyMatchesApp(ol, "outlook") && !UsageStore.KeyMatchesApp(ol, "teams"));
         Check("key matches packaged app by name", UsageStore.KeyMatchesApp(teams, UsageStore.Norm("Microsoft Teams (work or school)")));
+        {
+            var us5 = new UsageStore(cfg, tmp + ".5", () => clock);
+            var edge = new AppEntry { Name = "Microsoft Edge", AppId = "MSEdge" };
+            var terminal = new AppEntry { Name = "Terminal", AppId = "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App" };
+            var snip = new AppEntry { Name = "Snipping Tool", AppId = "Microsoft.ScreenSketch_8wekyb3d8bbwe!App" };
+            var notepad = new AppEntry { Name = "Notepad", AppId = @"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\notepad.exe" };
+            foreach (var k in new[] { "msedge", "windowsterminal", "msteams", "snippingtool" }) us5.Record(k, 1);
+            Check("frecency: time in msedge / WindowsTerminal / ms-teams counts for Edge / Terminal / Teams", us5.ScoreOfApp(edge) > 0.9 && us5.ScoreOfApp(terminal) > 0.9 && us5.ScoreOfApp(teams) > 0.9 && us5.ScoreOfApp(notepad) == 0,
+                $"{us5.ScoreOfApp(edge):0.00} {us5.ScoreOfApp(terminal):0.00} {us5.ScoreOfApp(teams):0.00} {us5.ScoreOfApp(notepad):0.00}");
+            Check("frecency: matching by name still counts (SnippingTool.exe -> Snipping Tool)", us5.ScoreOfApp(snip) > 0.9);
+            var us6 = new UsageStore(cfg, tmp + ".6", () => clock);
+            us6.Record("app:" + UsageStore.Norm("Outlook (classic)"), 1); us6.Record("setting:bluetooth", 1);
+            var appApp = new AppEntry { Name = "App", AppId = "Vendor.App_x!Main" }; var setApp = new AppEntry { Name = "Set", AppId = "set" };
+            Check("frecency: an app named like the key prefix ('App', 'Set') does not collect every choice", us6.ScoreOfApp(appApp) == 0 && us6.ScoreOfApp(setApp) == 0, $"{us6.ScoreOfApp(appApp)} {us6.ScoreOfApp(setApp)}");
+            // Spread's own window in front (the overview): the program before it stops counting
+            us6.OnForeground("firefox"); clock = clock.AddSeconds(2); us6.OnForeground(null); clock = clock.AddSeconds(20); us6.FlushPending();
+            Check("activation: seconds spent in Spread's overview do not count for the program before it", us6.ScoreOf("firefox") == 0);
+            us6.Save(true);
+            Check("usage.json is replaced through a temporary file (none left behind)", File.Exists(tmp + ".6") && !File.Exists(tmp + ".6.tmp") && new UsageStore(cfg, tmp + ".6", () => clock).ScoreOf("setting:bluetooth") > 0.9);
+        }
 
         // ---- engine: used-often-first, apps before settings ----
         var catalog = new AppCatalog();
