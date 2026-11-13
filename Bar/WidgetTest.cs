@@ -78,6 +78,17 @@ internal static class WidgetTest
         Check("weather: parsed, a day with a missing value is left out (not the whole forecast)", w != null && w.Hours.Count == 2 && w.Days.Count == 2 && w.Sunrise == new DateTime(2026, 12, 21, 8, 37, 0) && w.Days[1].Sunset == new DateTime(2026, 12, 22, 15, 39, 0));
         Check("weather: day/night from sunrise/sunset (16:00 in December is night)", w != null && !WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 21, 16, 0, 0)) && WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 21, 12, 0, 0)) && !WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 22, 8, 0, 0)));
         Check("weather: without sun times for that day the 07-20 h rule", w != null && WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 24, 8, 0, 0)) && !WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 24, 21, 0, 0)));
+
+        static MeetingItem M(DateTime s, DateTime e, bool allDay = false) => new("id", "t", s, e, "", null, allDay);
+        static bool On(MeetingItem m, int day) => ClockPanel.OnDay(m, new DateTime(2026, 11, day));
+        var eve = M(new DateTime(2026, 11, 13, 19, 0, 0), new DateTime(2026, 11, 14));
+        Check("agenda: 19:00-00:00 is on its own day only (not the next one)", On(eve, 13) && !On(eve, 14) && !On(eve, 12));
+        var night = M(new DateTime(2026, 11, 13, 22, 0, 0), new DateTime(2026, 11, 14, 2, 0, 0));
+        Check("agenda: a meeting over midnight is on both days", On(night, 13) && On(night, 14) && !On(night, 15));
+        var allDay = M(new DateTime(2026, 11, 13), new DateTime(2026, 11, 15), true);
+        Check("agenda: all-day 13-14 Nov (ends 00:00 on the 15th)", !On(allDay, 12) && On(allDay, 13) && On(allDay, 14) && !On(allDay, 15));
+        var zero = M(new DateTime(2026, 11, 13), new DateTime(2026, 11, 13));
+        Check("agenda: zero-length entry at 00:00 is on its own day", On(zero, 13) && !On(zero, 12) && !On(zero, 14));
         return fail;
     }
 }
