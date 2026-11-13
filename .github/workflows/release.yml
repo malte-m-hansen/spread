@@ -1,0 +1,89 @@
+name: release
+
+# Push a tag like v0.1.0 to build, test and publish a GitHub release.
+# "Run workflow" on the Actions tab does the same build but only keeps the zip as a downloadable artifact (no release): use it as a dry run.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write        # create the release
+  id-token: write        # build provenance
+  attestations: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Read the version from Spread.csproj
+        id: ver
+        shell: bash
+        run: |
+          v=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Spread.csproj | head -1 | tr -d '\r')
+          [ -n "$v" ] || { echo "no <Version> in Spread.csproj"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$v" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match <Version> $v in Spread.csproj"; exit 1
+          fi
+
+      - name: Publish
+        run: dotnet publish Spread.csproj -c Release -o publish
+
+      - name: Self-tests
+        shell: bash
+        run: |
+          fail=0
+          for t in core bar layout search dock log atlassian github; do
+            echo "::group::--$t-test"
+            dotnet publish/Spread.dll --$t-test || fail=1
+            echo "::endgroup::"
+          done
+          [ "$(dotnet publish/Spread.dll --version)" = "Spread ${{ steps.ver.outputs.version }}" ] || { echo "--version does not report ${{ steps.ver.outputs.version }}"; fail=1; }
+          exit $fail
+
+      - name: Package
+        shell: bash
+        run: |
+          name="Spread-v${{ steps.ver.outputs.version }}-win-x64"
+          mkdir -p "stage/$name"
+          cp -r publish/. "stage/$name/"
+          cp dist/Spread.cmd "stage/$name/"
+          cp README.md "stage/$name/"
+          rm -f "stage/$name"/*.pdb
+          (cd stage && 7z a -tzip -mx=9 "../$name.zip" "$name" > /dev/null)
+          sha256sum "$name.zip" > "$name.zip.sha256"
+          cat "$name.zip.sha256"
+          echo "zip=$name.zip" >> "$GITHUB_ENV"
+
+      - name: Attest build provenance
+        # Not available for private repositories on a free plan; it runs once the repository is public.
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.zip }}
+
+      - name: Keep the zip (dry run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.zip }}
+          path: |
+            ${{ env.zip }}
+            ${{ env.zip }}.sha256
+
+      - name: Create the release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""; case "${GITHUB_REF_NAME}" in *-*) pre="--prerelease";; esac
+          gh release create "${GITHUB_REF_NAME}" "$zip" "$zip.sha256" \
+            --title "Spread ${GITHUB_REF_NAME}" --generate-notes --verify-tag $pre

@@ -21,6 +21,7 @@ internal static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        if (args.Contains("--version")) { Console.WriteLine("Spread " + AppInfo.Version); return 0; }
         if (args.Contains("--layout-test")) return LayoutTest();
         if (args.Contains("--list-windows")) return ListWindows();
         if (args.Contains("--widget-test")) return WidgetTest.Run();
@@ -144,7 +145,7 @@ internal static class Program
         SetConsoleCtrlHandler(_ctrl, true);
 
         using var tray = BuildTray(overlay, app);
-        Log.Write($"started (hotEdge={cfg.HotEdge} dwell={cfg.HotEdgeDwellMs}ms, layout={cfg.Layout}, hotkey={cfg.Hotkey}, winTap={cfg.WinTap})");
+        Log.Write($"started (v{AppInfo.Version}, hotEdge={cfg.HotEdge} dwell={cfg.HotEdgeDwellMs}ms, layout={cfg.Layout}, hotkey={cfg.Hotkey}, winTap={cfg.WinTap})");
         if (args.Contains("--show")) app.Dispatcher.BeginInvoke(new Action(() => overlay.ShowOverlay()));
         try { app.Run(); Log.Write("shutdown: message loop ended"); }
         finally { bar?.Unregister(); TaskbarControl.Restore(); Log.Write("shutdown: done"); }
@@ -154,6 +155,7 @@ internal static class Program
     static System.Windows.Forms.NotifyIcon BuildTray(OverlayWindow overlay, System.Windows.Application app)
     {
         var menu = new System.Windows.Forms.ContextMenuStrip();
+        menu.Items.Add(new System.Windows.Forms.ToolStripMenuItem("Spread " + AppInfo.Version) { Enabled = false });
         menu.Items.Add("Show overview", null, (_, _) => overlay.ShowOverlay(0, false, "tray"));
 
         var autostart = new System.Windows.Forms.ToolStripMenuItem("Start with Windows") { Checked = IsAutostart(), CheckOnClick = true };

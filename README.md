@@ -35,13 +35,23 @@ It is a single WPF application (.NET 8). It does not replace Explorer; it sits o
 ## Requirements
 
 - Windows 11 (x64)
-- .NET 8 SDK
+- To run a release: the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0/runtime) (x64)
+- To build it yourself: the .NET 8 SDK
 
 Optional, for the features that use them:
 - [Everything](https://www.voidtools.com/) for file search
 - Classic Outlook for the calendar, mail and meeting widgets
 - [GitHub CLI](https://cli.github.com/) (`gh auth login`) for the Dependabot widget
 - An Atlassian API token for the Jira widget
+
+## Download
+
+Get the latest `Spread-vX.Y.Z-win-x64.zip` from the [Releases page](../../releases), extract the whole zip somewhere permanent (not a temp folder), and double-click `Spread.cmd`. If the .NET 8 Desktop Runtime is missing, `Spread.cmd` says so and opens the download page.
+
+- Spread has no .exe, on purpose: an unsigned .exe is flagged by many virus scanners, so Spread runs as `dotnet Spread.dll`. `Spread.cmd` is just a shortcut for that. A console window stays open, minimized, while Spread runs; closing it ends Spread.
+- Check the download against the `.sha256` file on the release page: `certutil -hashfile Spread-vX.Y.Z-win-x64.zip SHA256`.
+- Once the repository is public, each zip also carries a build attestation from GitHub Actions: `gh attestation verify Spread-vX.Y.Z-win-x64.zip --repo malte-m-hansen/spread`.
+- `dotnet Spread.dll --version` prints the version; the tray menu shows it too.
 
 ## Build and run
 
@@ -124,6 +134,7 @@ Offline test switches: `--core-test`, `--layout-test`, `--search-test`, `--dock-
 ## Project layout
 
 ```
+AppInfo.cs          the version number
 Program.cs          start-up, tray icon, command-line options, self-tests
 Config.cs           settings (config.json) and the log
 OverlayWindow.cs    the overview: animation, input, search results, dock
@@ -138,6 +149,8 @@ Bar/Atlassian/      Jira and Confluence widget
 Bar/GitHub/         Dependabot widget
 Search/             app and settings search, usage ranking, Everything
 Dock/               the dock
+dist/               Spread.cmd, the launcher that goes into the release zip
+.github/workflows/  the release workflow
 tools/              GNOME layout parity test
 ```
 

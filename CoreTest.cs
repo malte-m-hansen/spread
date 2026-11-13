@@ -21,8 +21,17 @@ internal static class CoreTest
         ConfigChecks();
         RestartChecks();
         WallpaperChecks();
+        VersionChecks();
         Console.WriteLine(_fail == 0 ? "CORE TEST PASSED" : $"CORE TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
+    }
+
+    static void VersionChecks()
+    {
+        Console.WriteLine("Version:");
+        Check("version strips the commit suffix", AppInfo.Parse("0.1.0+abc123") == "0.1.0" && AppInfo.Parse("1.2.3-beta.1+x") == "1.2.3-beta.1");
+        Check("version falls back to dev", AppInfo.Parse(null) == "dev" && AppInfo.Parse("  ") == "dev" && AppInfo.Parse("+abc") == "dev");
+        Check("this build has a real version", AppInfo.Version != "dev" && char.IsDigit(AppInfo.Version[0]), AppInfo.Version);
     }
 
     static void TaskbarChecks()
