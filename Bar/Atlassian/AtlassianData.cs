@@ -28,7 +28,8 @@ internal sealed class AlertsConfig
 
 internal sealed class AtlassianConfig
 {
-    public bool Enabled { get; set; } = true;
+    /// <summary>Off until you set it up (Atlassian.Enabled in config.json): the defaults below are placeholders, not a real site.</summary>
+    public bool Enabled { get; set; } = false;
     public string Site { get; set; } = "yourcompany.atlassian.net";
     /// <summary>Atlassian login e-mail. Empty = the Windows UPN.</summary>
     public string Email { get; set; } = "";

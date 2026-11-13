@@ -27,7 +27,8 @@ internal sealed class GitHubToastConfig
 
 internal sealed class GitHubConfig
 {
-    public bool Enabled { get; set; } = true;
+    /// <summary>Off until you set it up (GitHub.Enabled in config.json): the defaults below are placeholders, not a real organisation.</summary>
+    public bool Enabled { get; set; } = false;
     /// <summary>The API host: api.github.com, or "ghe.example.com/api/v3" for GitHub Enterprise Server. gh and the browser links use the matching web host.</summary>
     public string Host { get; set; } = "api.github.com";
     public string Org { get; set; } = "Contoso";
