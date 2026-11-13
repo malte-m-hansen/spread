@@ -34,6 +34,7 @@ internal sealed class OverlayWindow : Window
     const double WallpaperRamp = 0.06;     // wallpaper is fully opaque by this much progress (hides the real windows)
     const int HotkeyId = 0x5350, GestureSelectId = 0x5352, GestureLeftId = 0x5353, GestureRightId = 0x5354;
     bool _gestureKeys, _gestureNav;
+    readonly HashSet<string> _gestureKeyWarned = new(StringComparer.OrdinalIgnoreCase);
 
     enum State { Hidden, Opening, Open, Closing }
 
@@ -116,7 +117,7 @@ internal sealed class OverlayWindow : Window
     bool _pickerOpen;
     List<DockEntry> _dockEntries = new();
     bool _dockImportTried;
-    readonly Dictionary<IntPtr, string?> _aumids = new();
+    readonly Dictionary<IntPtr, (uint pid, string? aumid)> _aumids = new();
     readonly List<Item> _items = new();
     readonly List<Border> _tiles = new();
     readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -745,7 +746,8 @@ internal sealed class OverlayWindow : Window
         {
             if (!on) { Native.UnregisterHotKey(_hwnd, id); continue; }
             if (string.IsNullOrWhiteSpace(text) || !HotkeyParser.TryParse(text, out uint mods, out uint vk)) continue;
-            if (!Native.RegisterHotKey(_hwnd, id, mods | 0x4000, vk)) Log.Write($"gesture key '{text}' could not be registered (already in use?)");
+            // registered at every open: say it once, not every time (e.g. graphics drivers own Ctrl+Alt+arrows)
+            if (!Native.RegisterHotKey(_hwnd, id, mods | 0x4000, vk) && _gestureKeyWarned.Add(text)) Log.Write($"gesture key '{text}' could not be registered (already in use?)");
         }
     }
 
@@ -782,10 +784,12 @@ internal sealed class OverlayWindow : Window
 
     double DockReserve => _dock.Visibility == Visibility.Visible ? (DockBar.HeightFor(_dock.IconDip) + 24) * _scale : 0;
 
+    /// <summary>Cached per window and process: Windows reuses window handles, and a reused one must not keep the old app's id.</summary>
     string? Aumid(IntPtr h)
     {
-        if (!_aumids.TryGetValue(h, out var a)) _aumids[h] = a = WindowAumid.Get(h);
-        return a;
+        Native.GetWindowThreadProcessId(h, out uint pid);
+        if (!_aumids.TryGetValue(h, out var e) || e.pid != pid) _aumids[h] = e = (pid, WindowAumid.Get(h));
+        return e.aumid;
     }
 
     void RebuildDock()
@@ -1110,6 +1114,9 @@ internal sealed class OverlayWindow : Window
         StartTicking();
     }
 
+    static readonly Brush BadgeNormal = Frozen(Color.FromArgb(0xD8, 0x20, 0x20, 0x20)), BadgeArmed = Frozen(Color.FromArgb(0xF0, 0xC0, 0x1C, 0x28));
+    static Brush Frozen(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
+
     void UpdateBadges(double alpha)
     {
         double s = _scale, now = Now;
@@ -1120,7 +1127,8 @@ internal sealed class OverlayWindow : Window
             bool armed = now < st.ArmedUntil;
             int n = st.Live.Count;
             st.BadgeText.Text = armed ? $"Close all {n}?  Click again" : $"{n} windows";
-            st.Badge.Background = new SolidColorBrush(armed ? Color.FromArgb(0xF0, 0xC0, 0x1C, 0x28) : Color.FromArgb(0xD8, 0x20, 0x20, 0x20));
+            var bg = armed ? BadgeArmed : BadgeNormal;   // runs every frame: no new brush per frame
+            if (!ReferenceEquals(st.Badge.Background, bg)) st.Badge.Background = bg;
             st.Badge.Opacity = alpha;
             st.Badge.IsHitTestVisible = alpha > 0.5;
             var r = shown.CurScaled;
