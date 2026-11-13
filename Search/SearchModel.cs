@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Spread;
 
@@ -104,10 +105,35 @@ internal static class SettingsProvider
             if (string.IsNullOrWhiteSpace(x.Name) || string.IsNullOrWhiteSpace(x.Uri)) continue;
             string id = "extra:" + UsageStore.Norm(x.Name);
             all.RemoveAll(e => e.Id == id || string.Equals(e.Title, x.Name, StringComparison.OrdinalIgnoreCase));
-            bool isUri = x.Uri.Contains(':') && !x.Uri.Contains('\\') && !x.Uri.Contains("/") || x.Uri.StartsWith("ms-settings:", StringComparison.OrdinalIgnoreCase);
-            all.Add(new SettingsEntry { Id = id, Title = x.Name, Keywords = x.Keywords ?? "", Uri = isUri ? x.Uri : "", Exe = isUri ? "" : x.Uri, Tool = !isUri });
+            var (isUri, exe, args) = ParseTarget(x.Uri);
+            all.Add(new SettingsEntry { Id = id, Title = x.Name, Keywords = x.Keywords ?? "", Uri = isUri ? x.Uri.Trim() : "", Exe = exe, Args = args, Tool = !isUri });
         }
         return all;
+    }
+
+    static readonly Regex Scheme = new(@"^[A-Za-z][A-Za-z0-9+.\-]+:", RegexOptions.Compiled);
+    static readonly Regex ExeThenArgs = new(@"^(?<exe>.+?\.(exe|com|bat|cmd|msc|cpl|lnk))(\s+(?<args>.*))?$", RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.Singleline);
+
+    /// <summary>
+    /// What an ExtraSettings "Uri" is. An address with a scheme (ms-settings:, https://, shell:, mailto:) is opened as it is; anything else is a program,
+    /// with arguments after it: "control /name Microsoft.Network", "\"C:\My Tools\x.exe\" -y", "rundll32.exe sysdm.cpl,EditEnvironmentVariables".
+    /// Before, a program with arguments was run as one file name (not found), "explorer.exe shell:..." counted as an address, https:// as a program.
+    /// An unquoted path with spaces and no arguments ("C:\My Tools\thing") stays one program.
+    /// </summary>
+    public static (bool isUri, string exe, string args) ParseTarget(string text)
+    {
+        string s = (text ?? "").Trim();
+        if (Scheme.IsMatch(s)) return (true, "", "");   // two letters at least before the ':' - "C:\..." is a path
+        if (s.StartsWith('"'))
+        {
+            int q = s.IndexOf('"', 1);
+            return q > 0 ? (false, s[1..q], s[(q + 1)..].Trim()) : (false, s.Trim('"'), "");
+        }
+        var m = ExeThenArgs.Match(s);
+        if (m.Success) return (false, m.Groups["exe"].Value, m.Groups["args"].Value.Trim());
+        int sp = s.IndexOfAny(new[] { ' ', '\t' });
+        if (sp > 0 && s[..sp].IndexOfAny(new[] { '\\', '/' }) < 0) return (false, s[..sp], s[(sp + 1)..].Trim());   // "control /name ...", "wt -p pwsh"
+        return (false, s, "");
     }
 
     static bool ToolExists(string exe)
