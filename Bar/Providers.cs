@@ -250,14 +250,17 @@ internal static class WslProbe
         return (false, 0);
     }
 
+    /// <summary>Running distributions. wsl.exe can hang while the WSL service is stuck: the output is read asynchronously so the 4 s limit really applies.</summary>
     public static string[] RunningDistros()
     {
         try
         {
             var psi = new ProcessStartInfo("wsl.exe", "-l --running") { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true, StandardOutputEncoding = Encoding.Unicode };
             using var p = Process.Start(psi)!;
-            string o = p.StandardOutput.ReadToEnd();
-            if (!p.WaitForExit(4000)) { try { p.Kill(); } catch { } }
+            var read = p.StandardOutput.ReadToEndAsync();
+            if (!p.WaitForExit(4000)) { try { p.Kill(entireProcessTree: true); } catch { } Log.Write("wsl -l --running did not answer within 4 s"); return Array.Empty<string>(); }
+            if (!read.Wait(2000)) return Array.Empty<string>();
+            string o = read.Result;
             return o.Replace("\0", "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Where(l => !l.StartsWith("Windows Subsystem", StringComparison.OrdinalIgnoreCase) && !l.StartsWith("There are no", StringComparison.OrdinalIgnoreCase) && !l.StartsWith("Der er ingen", StringComparison.OrdinalIgnoreCase))
                 .Select(l => l.Replace("(Default)", "").Trim()).Where(l => l.Length > 0).ToArray();
@@ -267,7 +270,7 @@ internal static class WslProbe
 
     public static void Shutdown()
     {
-        try { Process.Start(new ProcessStartInfo("wsl.exe", "--shutdown") { UseShellExecute = false, CreateNoWindow = true }); }
+        try { Process.Start(new ProcessStartInfo("wsl.exe", "--shutdown") { UseShellExecute = false, CreateNoWindow = true })?.Dispose(); }
         catch (Exception e) { Log.Write("wsl --shutdown failed: " + e.Message); }
     }
 }
