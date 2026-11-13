@@ -33,7 +33,8 @@ internal sealed class ToastQueue
     public double Seconds { get; set; } = 10;
     /// <summary>How long a sticky toast stays; 0 = until it is closed.</summary>
     public double StickySeconds { get; set; } = 0;
-    /// <summary>True while a toast must not appear (fullscreen app, overview open, notifications off). Waiting toasts are kept.</summary>
+    /// <summary>True while a toast must not appear (fullscreen app, overview open, notifications off). Waiting toasts are kept;
+    /// visible ones stay in <see cref="Visible"/> with their time stopped (the manager hides their windows) and come back afterwards.</summary>
     public bool Suppressed { get; set; }
 
     readonly List<Entry> _visible = new();   // newest first
@@ -66,7 +67,9 @@ internal sealed class ToastQueue
         bool changed = false;
         foreach (var e in _visible.ToList())
         {
-            if (e.Hovered || Suppressed) continue;
+            // a hidden window gets no MouseLeave: drop the hover, or a toast hovered when it was hidden would never expire
+            if (Suppressed) { e.Hovered = false; continue; }
+            if (e.Hovered) continue;
             e.Remaining -= dt;
             if (e.Remaining <= 0) { _visible.Remove(e); changed = true; }
         }
@@ -198,22 +201,26 @@ internal static class ToastManager
         Sync();
     }
 
+    /// <summary>Windows follow the queue. While suppressed they are hidden, not just frozen: they are topmost and would stay over the
+    /// fullscreen app / the overview. They come back with the time they had left.</summary>
     static void Sync()
     {
+        bool hide = Queue.Suppressed;
         // close windows of entries that are gone
         foreach (var kv in Windows.ToList())
-            if (!Queue.Visible.Contains(kv.Key)) { Windows.Remove(kv.Key); kv.Value.FadeOutAndClose(); }
-        // create windows for new entries
-        foreach (var e in Queue.Visible)
-            if (!Windows.ContainsKey(e))
-            {
-                var w = new ToastWindow(e, Clicked, Dismissed, Muted, ClearAll, (win, h) => Queue.SetHover(win.Entry, h));
-                Windows[e] = w;
-                Place(w, Queue.Visible.ToList().IndexOf(e));
-                w.Show(); w.FadeIn();
-            }
+            if (!Queue.Visible.Contains(kv.Key)) { Windows.Remove(kv.Key); if (kv.Value.IsVisible) kv.Value.FadeOutAndClose(); else { try { kv.Value.Close(); } catch { } } }
         int i = 0;
-        foreach (var e in Queue.Visible) { if (Windows.TryGetValue(e, out var w)) Place(w, i); i++; }
+        foreach (var e in Queue.Visible)
+        {
+            if (!Windows.TryGetValue(e, out var w))
+            {
+                w = new ToastWindow(e, Clicked, Dismissed, Muted, ClearAll, (win, h) => Queue.SetHover(win.Entry, h));
+                Windows[e] = w;
+            }
+            Place(w, i++);
+            if (hide) { if (w.IsVisible) w.Hide(); }
+            else if (!w.IsVisible) { w.Show(); if (w.Opacity < 1) w.FadeIn(); }
+        }
     }
 
     static void Place(ToastWindow w, int index)
@@ -273,6 +280,19 @@ internal static class ToastTest
         Check("shown when no longer suppressed", q.Visible.Count == 1 && q.Visible[0].Spec.Id == "a");
         q.Mute(40, 3600);
         Check("mute clears and drops new toasts", q.Visible.Count == 0 && !q.Enqueue(S("m"), 100) && q.IsMuted(100) && !q.IsMuted(3641));
+        // suppression while toasts are already on screen (overview opened, fullscreen app came to the front)
+        var v = new ToastQueue { Capacity = 3, Seconds = 10 };
+        v.Enqueue(S("v1"), 0); v.Enqueue(S("v2"), 0); v.Tick(0);
+        v.Tick(4);
+        v.SetHover(v.Visible.First(x => x.Spec.Id == "v1"), true);
+        v.Suppressed = true; v.Enqueue(S("v3"), 5); v.Tick(5); v.Tick(500);
+        Check("suppressed with toasts visible: they stay (hidden), their time stands still, nothing new appears", v.Visible.Count == 2 && v.Visible.All(x => Math.Abs(x.Remaining - 6) < 1e-9) && v.Waiting == 1);
+        Check("suppressed: the hover is dropped (a hidden window gets no MouseLeave)", v.Visible.All(x => !x.Hovered));
+        v.Suppressed = false; v.Tick(501);
+        Check("after suppression: back with the time they had left, the waiting one follows", v.Visible.Count == 3 && v.Visible.Where(x => x.Spec.Id != "v3").All(x => Math.Abs(x.Remaining - 5) < 1e-9));
+        v.Tick(506.5);
+        Check("...and they expire on their remaining time", v.Visible.Count == 1 && v.Visible[0].Spec.Id == "v3");
+        _fail += WidgetTest.Offline();   // the bar's other pure checks have no switch of their own yet
         Console.WriteLine(_fail == 0 ? "TOAST TEST PASSED" : $"TOAST TEST FAILED ({_fail})");
         if (_fail != 0 || !args.Contains("--show")) return _fail == 0 ? 0 : 1;
 

@@ -58,7 +58,9 @@ internal static class BarUi
     public static readonly FontFamily Icons = new("Segoe Fluent Icons, Segoe MDL2 Assets");
     public static readonly FontFamily Emoji = new("Segoe UI Emoji");
     public static readonly FontFamily Text = new("Segoe UI");
-    public static readonly Brush Dim = new SolidColorBrush(Color.FromArgb(0xAA, 255, 255, 255));
+    /// <summary>Frozen: shared by every popover and toast, and an unfrozen brush belongs to the thread that first touched this class.</summary>
+    public static readonly Brush Dim = Frozen(Color.FromArgb(0xAA, 255, 255, 255));
+    static Brush Frozen(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
 
     public static TextBlock Txt(string s, double size = 13, Brush? fg = null, FontWeight? w = null) => new()
     {

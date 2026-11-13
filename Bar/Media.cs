@@ -11,8 +11,17 @@ internal static class MediaProbe
 {
     static GlobalSystemMediaTransportControlsSessionManager? _mgr;
 
+    /// <summary>Waits at most 5 s: the answer comes from the playing app, and one that never answers would keep the widget's worker
+    /// (and its busy flag) forever, so "now playing" would stop updating for the rest of the session.</summary>
+    static T Within<T>(Windows.Foundation.IAsyncOperation<T> op)
+    {
+        var t = op.AsTask();
+        if (!t.Wait(5000)) throw new TimeoutException();
+        return t.Result;
+    }
+
     static GlobalSystemMediaTransportControlsSessionManager Mgr() =>
-        _mgr ??= GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask().GetAwaiter().GetResult();
+        _mgr ??= Within(GlobalSystemMediaTransportControlsSessionManager.RequestAsync());
 
     public static MediaInfo? Read()
     {
@@ -20,7 +29,7 @@ internal static class MediaProbe
         {
             var s = Mgr().GetCurrentSession();
             if (s == null) return null;
-            var p = s.TryGetMediaPropertiesAsync().AsTask().GetAwaiter().GetResult();
+            var p = Within(s.TryGetMediaPropertiesAsync());
             if (string.IsNullOrWhiteSpace(p.Title)) return null;
             var st = s.GetPlaybackInfo().PlaybackStatus;
             if (st == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed || st == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped) return null;
@@ -39,12 +48,12 @@ internal static class MediaProbe
                 if (s == null) return;
                 switch (cmd)
                 {
-                    case "toggle": s.TryTogglePlayPauseAsync().AsTask().GetAwaiter().GetResult(); break;
-                    case "next": s.TrySkipNextAsync().AsTask().GetAwaiter().GetResult(); break;
-                    case "prev": s.TrySkipPreviousAsync().AsTask().GetAwaiter().GetResult(); break;
+                    case "toggle": Within(s.TryTogglePlayPauseAsync()); break;
+                    case "next": Within(s.TrySkipNextAsync()); break;
+                    case "prev": Within(s.TrySkipPreviousAsync()); break;
                 }
             }
-            catch (Exception e) { Log.Write("media command failed: " + e.Message); }
+            catch (Exception e) { Log.Write("media command failed: " + e.GetType().Name); }
         });
     }
 }

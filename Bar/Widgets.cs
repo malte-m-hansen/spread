@@ -52,7 +52,7 @@ internal sealed class WeatherWidget : BarWidget
         {
             WeatherData? d = null;
             try { d = await WeatherProbe.FetchAsync(loc); } catch (Exception e) { Log.Write("weather fetch failed: " + e.GetType().Name); }
-            Ctx.Dispatcher.BeginInvoke(new Action(() =>
+            _ = Ctx.Dispatcher.BeginInvoke(new Action(() =>
             {
                 _busy = false;
                 if (d == null) { _due = Environment.TickCount64 + 2 * 60_000; return; }   // try again soon
@@ -70,7 +70,7 @@ internal sealed class WeatherWidget : BarWidget
         var now = DateTime.Now;
         var hours = _data.Hours.Where(h => h.Time >= now.Date.AddHours(now.Hour)).Take(12).Where((h, i) => i % 2 == 0);
         sp.Children.Add(new Border { Height = 8 });
-        foreach (var h in hours) sp.Children.Add(BarUi.Row($"{h.Time:HH:mm}", $"{WeatherProbe.Glyph(h.Code, h.Time.Hour is >= 7 and < 20)} {Math.Round(h.Temp):0}°"));
+        foreach (var h in hours) sp.Children.Add(BarUi.Row($"{h.Time:HH:mm}", $"{WeatherProbe.Glyph(h.Code, WeatherProbe.IsDayAt(_data, h.Time))} {Math.Round(h.Temp):0}°"));
         sp.Children.Add(new Border { Height = 8 });
         foreach (var d in _data.Days.Skip(1).Take(3)) sp.Children.Add(BarUi.Row($"{d.Date:ddd d MMM}", $"{WeatherProbe.Glyph(d.Code, true)} {Math.Round(d.Max):0}° / {Math.Round(d.Min):0}°"));
         return sp;
@@ -169,8 +169,8 @@ internal sealed class SystemLoadWidget : BarWidget
     FrameworkElement BuildPopover()
     {
         var sp = new StackPanel();
-        var (cpu, used, total) = LoadProbe.Read();
-        sp.Children.Add(BarUi.Row("CPU", $"{(_hist.Count > 0 ? _hist[^1] : cpu):0}%"));
+        var (used, total) = LoadProbe.Memory();   // not Read(): that would reset the CPU baseline of the next 2 s sample
+        sp.Children.Add(BarUi.Row("CPU", $"{(_hist.Count > 0 ? _hist[^1] : 0):0}%"));
         sp.Children.Add(BarUi.Row("Memory", $"{used:0.0} / {total:0.0} GB"));
         var canvas = new Canvas { Width = 220, Height = 44, Margin = new Thickness(0, 8, 0, 0), Background = new SolidColorBrush(Color.FromArgb(0x18, 255, 255, 255)) };
         var pl = new Polyline { Stroke = new SolidColorBrush(Color.FromRgb(0x6C, 0xB6, 0xFF)), StrokeThickness = 1.6 };
@@ -358,24 +358,63 @@ internal sealed class MediaWidget : BarWidget
     }
 }
 
+// ---------------- network state, shared by the network and VPN widgets ----------------
+
+/// <summary>
+/// One network read every 5 s on a worker thread, shared by the network and the VPN widget. With GlobalProtect the read looks at the agent's
+/// registry state, the tail of its multi-MB log and may do DNS lookups: that must not run on the UI thread. Results arrive on the UI thread.
+/// </summary>
+internal static class NetPoll
+{
+    static bool _busy, _failLogged;
+    static long _due, _busySince;
+    public static NetState? Last { get; private set; }
+    public static event Action? Updated;
+
+    /// <summary>Called from the widgets' Tick (UI thread): starts a read when one is due and none is running.</summary>
+    public static void Poll(BarContext ctx)
+    {
+        long now = Environment.TickCount64;
+        if (_busy && now - _busySince > 30_000) { _busy = false; Log.Write("network probe did not answer for 30 s, trying again"); }
+        if (_busy || now < _due) return;
+        _busy = true; _busySince = now; _due = now + 5000;
+        string match = ctx.Cfg.VpnAdapterMatch;
+        Task.Run(() =>
+        {
+            NetState? s = null;
+            try { s = NetProbe.Read(match); }
+            catch (Exception e) { if (!_failLogged) { _failLogged = true; Log.Write("network probe failed: " + e.GetType().Name); } }
+            ctx.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                _busy = false;
+                if (s == null) return;
+                _failLogged = false; Last = s;
+                Updated?.Invoke();
+            }));
+        });
+    }
+}
+
 // ---------------- network (inside the status pill) ----------------
 
 internal sealed class NetworkWidget : BarWidget
 {
     public override string Id => "network";
-    readonly TextBlock _glyph = new() { FontFamily = BarUi.Icons, FontSize = 14, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0), Background = Brushes.Transparent };
+    readonly TextBlock _glyph = new() { FontFamily = BarUi.Icons, FontSize = 14, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0), Background = Brushes.Transparent, Text = "\uE701", Opacity = 0.35 };
 
-    protected override void Build() { View = _glyph; Update(); }
+    protected override void Build() { View = _glyph; NetPoll.Updated += Update; Update(); NetPoll.Poll(Ctx); }
 
     void Update()
     {
-        var s = NetProbe.Read("");
+        var s = NetPoll.Last;
+        if (s == null) return;   // the first read is still running
         _glyph.Text = s.Kind == "ethernet" ? "\uE839" : "\uE701";
         _glyph.Opacity = s.Kind == "none" ? 0.35 : 1;
         _glyph.ToolTip = s.Kind == "none" ? "No network" : (s.Kind == "wifi" ? "Wi-Fi: " : "Ethernet: ") + s.Name;
     }
 
-    public override void Tick() { if (Every(5000)) Update(); }
+    public override void Tick() => NetPoll.Poll(Ctx);
+    public override void Stop() => NetPoll.Updated -= Update;
 }
 
 // ---------------- VPN (its own button, NOT part of the status pill) ----------------
@@ -394,12 +433,16 @@ internal sealed class VpnWidget : BarWidget
         row.Children.Add(_dot); row.Children.Add(_text);
         View = TopBarWindow.Pill(row, OpenPanel, 9);
         Present = !string.IsNullOrWhiteSpace(Ctx.Cfg.VpnAdapterMatch);
+        _dot.Fill = new SolidColorBrush(Color.FromArgb(0x70, 255, 255, 255)); _text.Opacity = 0.55;   // until the first read is back
+        NetPoll.Updated += Update;
         Update();
+        NetPoll.Poll(Ctx);
     }
 
     void Update()
     {
-        var s = NetProbe.Read(Ctx.Cfg.VpnAdapterMatch);
+        var s = NetPoll.Last;
+        if (s == null) return;
         _dot.Fill = s.VpnUp ? new SolidColorBrush(Color.FromRgb(0x4C, 0xD9, 0x64)) : new SolidColorBrush(Color.FromArgb(0x70, 255, 255, 255));
         _text.Opacity = s.VpnUp ? 1 : 0.55;
         View.ToolTip = (s.VpnUp ? $"VPN connected ({s.VpnName})" : $"VPN not connected{(s.VpnName.Length > 0 ? " (" + s.VpnName + ")" : "")}") + ". Click: open the GlobalProtect panel";
@@ -414,7 +457,8 @@ internal sealed class VpnWidget : BarWidget
         return r.StartsWith("invoked", StringComparison.Ordinal);
     }, null);   // put the taskbar away right after the click so the bottom hot edge works while the panel is open
 
-    public override void Tick() { if (Every(5000)) Update(); }
+    public override void Tick() => NetPoll.Poll(Ctx);
+    public override void Stop() => NetPoll.Updated -= Update;
 }
 
 // ---------------- volume (inside the status pill) ----------------

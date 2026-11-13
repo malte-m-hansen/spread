@@ -59,4 +59,40 @@ internal static class WidgetTest
         Line("media", () => { var m = MediaProbe.Read(); return m == null ? "nothing playing" : $"{(m.Playing ? "playing" : "paused")} (title length {m.Title.Length})"; });
         return 0;
     }
+
+    /// <summary>Pure checks of the bar's data logic: no machine probes, no network, synthetic text only. Returns the number of failures.
+    /// Run by `--toast-test` (the offline runner of the bar) until it has a switch of its own.</summary>
+    public static int Offline()
+    {
+        int fail = 0;
+        void Check(string name, bool ok) { Console.WriteLine($"  {(ok ? "ok  " : "FAIL")} {name}"); if (!ok) fail++; }
+        Console.WriteLine("Bar data checks (offline):");
+        var teams = OutlookData.TeamsLink;
+        Check("teams link: classic meetup-join, ends at whitespace", teams.Match("Join: https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d now").Value == "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d");
+        Check("teams link: short /meet/ link inside <...>", teams.Match("<https://teams.microsoft.com/meet/123456789?p=abc>").Value == "https://teams.microsoft.com/meet/123456789?p=abc");
+        Check("teams link: personal Teams", teams.IsMatch("https://teams.live.com/meet/9876543210"));
+        Check("outlook: fallback query date is US form whatever the culture", OutlookData.Us(new DateTime(2026, 11, 13, 14, 5, 0)) == "11/13/2026 02:05 PM");
+        Check("teams link: channel links and plain http are not join links", !teams.IsMatch("https://teams.microsoft.com/l/channel/19%3aabc/General") && !teams.IsMatch("http://teams.microsoft.com/l/meetup-join/x"));
+
+        const string json = """{"current":{"temperature_2m":3.5,"weather_code":0,"is_day":0,"wind_speed_10m":12},"hourly":{"time":["2026-12-21T15:00","2026-12-21T16:00"],"temperature_2m":[2,null],"weather_code":[0,0]},"daily":{"time":["2026-12-21","2026-12-22","2026-12-23"],"temperature_2m_max":[4,5,null],"temperature_2m_min":[1,2,0],"weather_code":[0,3,61],"sunrise":["2026-12-21T08:37","2026-12-22T08:38","2026-12-23T08:38"],"sunset":["2026-12-21T15:38","2026-12-22T15:39","2026-12-23T15:39"]}}""";
+        var w = WeatherProbe.Parse(json);
+        Check("weather: parsed, a day with a missing value is left out (not the whole forecast)", w != null && w.Hours.Count == 2 && w.Days.Count == 2 && w.Sunrise == new DateTime(2026, 12, 21, 8, 37, 0) && w.Days[1].Sunset == new DateTime(2026, 12, 22, 15, 39, 0));
+        Check("weather: day/night from sunrise/sunset (16:00 in December is night)", w != null && !WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 21, 16, 0, 0)) && WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 21, 12, 0, 0)) && !WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 22, 8, 0, 0)));
+        Check("weather: without sun times for that day the 07-20 h rule", w != null && WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 24, 8, 0, 0)) && !WeatherProbe.IsDayAt(w, new DateTime(2026, 12, 24, 21, 0, 0)));
+
+        static MeetingItem M(DateTime s, DateTime e, bool allDay = false) => new("id", "t", s, e, "", null, allDay);
+        static bool On(MeetingItem m, int day) => ClockPanel.OnDay(m, new DateTime(2026, 11, day));
+        var eve = M(new DateTime(2026, 11, 13, 19, 0, 0), new DateTime(2026, 11, 14));
+        Check("agenda: 19:00-00:00 is on its own day only (not the next one)", On(eve, 13) && !On(eve, 14) && !On(eve, 12));
+        var night = M(new DateTime(2026, 11, 13, 22, 0, 0), new DateTime(2026, 11, 14, 2, 0, 0));
+        Check("agenda: a meeting over midnight is on both days", On(night, 13) && On(night, 14) && !On(night, 15));
+        var allDay = M(new DateTime(2026, 11, 13), new DateTime(2026, 11, 15), true);
+        Check("agenda: all-day 13-14 Nov (ends 00:00 on the 15th)", !On(allDay, 12) && On(allDay, 13) && On(allDay, 14) && !On(allDay, 15));
+        var zero = M(new DateTime(2026, 11, 13), new DateTime(2026, 11, 13));
+        Check("agenda: zero-length entry at 00:00 is on its own day", On(zero, 13) && !On(zero, 12) && !On(zero, 14));
+
+        var h23 = Holidays.For("DK", 2023); var h26 = Holidays.For("DK", 2026);
+        Check("holidays: Easter 2026 = 5 April, Store bededag until 2023 (5 May 2023), not from 2024", Holidays.Easter(2026) == new DateTime(2026, 4, 5) && h23.ContainsKey(new DateTime(2023, 5, 5)) && h23.Count == 11 && h26.Count == 10 && !h26.ContainsKey(Holidays.Easter(2026).AddDays(26)));
+        return fail;
+    }
 }
