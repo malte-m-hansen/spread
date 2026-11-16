@@ -193,6 +193,7 @@ internal static class SearchTest
         }
 
         if (args.Contains("--live")) _fail += Live(cfg).GetAwaiter().GetResult();
+        LocationChecks();
         Console.WriteLine(_fail == 0 ? "SEARCH TEST PASSED" : $"SEARCH TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
     }
@@ -216,5 +217,25 @@ internal static class SearchTest
         if (!sorted) bad++;
         Console.WriteLine($"  Everything client found at: {(ev.FindExe() != null ? "yes" : "no")}");
         return bad;
+    }
+
+    /// <summary>App id -> program path, and the Explorer arguments for "show in Explorer".</summary>
+    static void LocationChecks()
+    {
+        Console.WriteLine("Open file location:");
+        const string pf = @"C:\Program Files";
+        string? Known(Guid g) => g == new Guid("6D809377-6AF0-444B-8957-A3773F02200E") ? pf : null;
+        var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { pf + @"\7-Zip\7zFM.exe", @"C:\Tools\a.exe", @"C:\a b" };
+        bool Exists(string p) => present.Contains(p);
+        string id = @"{6D809377-6AF0-444B-8957-A3773F02200E}\7-Zip\7zFM.exe";
+        Check("location: known-folder id becomes the program path", AppLocation.Resolve(id, Known, Exists) == pf + @"\7-Zip\7zFM.exe");
+        Check("location: a program that is gone has no location", AppLocation.Resolve(@"{6D809377-6AF0-444B-8957-A3773F02200E}\7-Zip\gone.exe", Known, Exists) == null);
+        Check("location: an absolute path stays as it is", AppLocation.Resolve(@"C:\Tools\a.exe", Known, Exists) == @"C:\Tools\a.exe");
+        Check("location: Store ids, URLs, unknown folders and empty text have none",
+            AppLocation.Resolve("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App", Known, Exists) == null && AppLocation.Resolve("https://example.com", Known, Exists) == null
+            && AppLocation.Resolve(@"{00000000-0000-0000-0000-000000000000}\x.exe", Known, Exists) == null && AppLocation.Resolve("", Known, Exists) == null);
+        Check("explorer: an existing file is selected, the path quoted (spaces, &)", AppLocation.RevealArguments(@"C:\a b\c&d.txt", p => p == @"C:\a b\c&d.txt") == @"/select,""C:\a b\c&d.txt""");
+        Check("explorer: a deleted file opens its folder", AppLocation.RevealArguments(@"C:\a b\c&d.txt", Exists) == @"""C:\a b""");
+        Check("explorer: nothing left to show = null", AppLocation.RevealArguments(@"D:\gone\x.txt", Exists) == null);
     }
 }
