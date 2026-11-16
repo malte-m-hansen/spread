@@ -24,7 +24,7 @@ internal static class SearchKeys
     public static SearchAction Resolve(KeyTarget target, ModifierKeys mods, SearchKeysConfig c)
     {
         bool app = target == KeyTarget.App;
-        if (mods.HasFlag(ModifierKeys.Alt)) return Parse(app ? c.AppAlt : c.FileAlt, app ? SearchAction.Default : SearchAction.CopyPath);
+        if (mods.HasFlag(ModifierKeys.Alt)) return Parse(app ? c.AppAlt : c.FileAlt, app ? SearchAction.Reveal : SearchAction.CopyPath);
         if (mods.HasFlag(ModifierKeys.Control)) return Parse(app ? c.AppCtrl : c.FileCtrl, app ? SearchAction.NewWindow : SearchAction.Reveal);
         if (mods.HasFlag(ModifierKeys.Shift)) return Parse(app ? c.AppShift : c.FileShift, app ? SearchAction.NewWindow : SearchAction.OpenWith);
         return SearchAction.Default;
@@ -33,7 +33,7 @@ internal static class SearchKeys
     public static string Label(SearchAction a, KeyTarget target) => a switch
     {
         SearchAction.NewWindow => "new window",
-        SearchAction.Reveal => "show in Explorer",
+        SearchAction.Reveal => target == KeyTarget.App ? "open file location" : "show in Explorer",
         SearchAction.OpenWith => "open with…",
         SearchAction.CopyPath => "copy path",
         SearchAction.OpenFolder => "open folder",

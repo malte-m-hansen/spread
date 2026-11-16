@@ -61,12 +61,12 @@ internal sealed class SearchConfig
     public SearchKeysConfig Keys { get; set; } = new();
 }
 
-/// <summary>Actions: default, newWindow, reveal (show in Explorer), openWith, copyPath, openFolder.</summary>
+/// <summary>Actions: default, newWindow, reveal (show in Explorer; for an app: open its file location), openWith, copyPath, openFolder.</summary>
 internal sealed class SearchKeysConfig
 {
     public string AppCtrl { get; set; } = "newWindow";
     public string AppShift { get; set; } = "newWindow";
-    public string AppAlt { get; set; } = "default";
+    public string AppAlt { get; set; } = "reveal";
     public string FileCtrl { get; set; } = "reveal";
     public string FileShift { get; set; } = "openWith";
     public string FileAlt { get; set; } = "copyPath";

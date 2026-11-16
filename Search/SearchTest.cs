@@ -190,6 +190,11 @@ internal static class SearchTest
             Check("keys: unknown text falls back to the default mapping, config can change one", SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Control, odd) == SearchAction.Reveal && SearchKeys.Resolve(KeyTarget.App, System.Windows.Input.ModifierKeys.Shift, odd) == SearchAction.Default && SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Alt, odd) == SearchAction.OpenFolder);
             string h0 = SearchKeys.Hint(KeyTarget.File, M, k), h1 = SearchKeys.Hint(KeyTarget.App, System.Windows.Input.ModifierKeys.Control, k);
             Check("keys: hint lists every meaning, or only the held key's", h0.Contains("Ctrl: show in Explorer") && h0.Contains("Shift: open with") && h0.Contains("Alt: copy path") && h1 == "Ctrl + Enter / click: new window", h0 + " | " + h1);
+            var Alt = System.Windows.Input.ModifierKeys.Alt;
+            Check("keys: Alt on an app = open file location (default)", SearchKeys.Resolve(KeyTarget.App, Alt, k) == SearchAction.Reveal);
+            Check("keys: the same action reads 'open file location' for an app and 'show in Explorer' for a file", SearchKeys.Label(SearchAction.Reveal, KeyTarget.App) == "open file location" && SearchKeys.Label(SearchAction.Reveal, KeyTarget.File) == "show in Explorer");
+            Check("keys: a saved AppAlt = default is still honoured", SearchKeys.Resolve(KeyTarget.App, Alt, new SearchKeysConfig { AppAlt = "default" }) == SearchAction.Default);
+            Check("keys: hint for Alt on an app", SearchKeys.Hint(KeyTarget.App, Alt, k) == "Alt + Enter / click: open file location", SearchKeys.Hint(KeyTarget.App, Alt, k));
         }
 
         if (args.Contains("--live")) _fail += Live(cfg).GetAwaiter().GetResult();
