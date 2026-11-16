@@ -303,6 +303,11 @@ internal sealed class OverlayWindow : Window
         PreviewKeyDown += OnKey;
         PreviewKeyDown += (_, _) => UpdateKeyHint();
         PreviewKeyUp += (_, _) => UpdateKeyHint();
+        PreviewKeyUp += (_, e) =>
+        {
+            Key k = e.Key == Key.System ? e.SystemKey : e.Key;
+            if (SearchMode && !_menuOpen && (k == Key.Apps || (k == Key.F10 && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))) e.Handled = true;
+        };
         PreviewTextInput += OnTextInput;
         _root.MouseMove += OnMouseMove;
         _root.MouseDown += OnMouseDown;
@@ -520,7 +525,7 @@ internal sealed class OverlayWindow : Window
     /// <summary>Typing before the search box has focus (it is focused after the animation) still starts a search.</summary>
     void OnTextInput(object sender, TextCompositionEventArgs e)
     {
-        if (_state is State.Hidden or State.Closing || _search.IsKeyboardFocused || _pickerOpen) return;
+        if (_state is State.Hidden or State.Closing || _search.IsKeyboardFocused || _pickerOpen || _menuOpen) return;
         _search.Focus(); Keyboard.Focus(_search);
         _search.Text += e.Text;
         _search.CaretIndex = _search.Text.Length;
@@ -1614,7 +1619,8 @@ internal sealed class OverlayWindow : Window
         // a Windows setting or tool has no "new window" etc.: Ctrl/Shift/Alt do nothing there, so the hint must not offer them
         if (!file && _results[_sel].Kind != SearchKind.App) { _keyHint.Text = "Enter / click: open"; _keyHint.Visibility = Visibility.Visible; return; }
         var target = file ? KeyTarget.File : KeyTarget.App;
-        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys);
+        bool hasLocation = file || _results[_sel].App is not { } hintApp || AppLocation.Resolve(hintApp.AppId) != null;
+        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, hasLocation);
         _keyHint.Visibility = Visibility.Visible;
     }
 
@@ -1771,12 +1777,14 @@ internal sealed class OverlayWindow : Window
         try
         {
             if (action == SearchAction.CopyPath) { Clipboard.SetText(h.Full); return; }
+            string? revealArgs = action == SearchAction.Reveal ? AppLocation.RevealArguments(h.Full) : null;
+            if (action == SearchAction.Reveal && revealArgs == null) { Log.Write("show in Explorer: the file and its folder are gone"); return; }
             var before = new HashSet<IntPtr>(_cache.Get(out _).Select(w => w.Hwnd));
             BeginClose(IntPtr.Zero);
             switch (action)
             {
                 case SearchAction.Reveal:
-                    if (AppLocation.RevealArguments(h.Full) is { } rev) Process.Start(new ProcessStartInfo("explorer.exe", rev) { UseShellExecute = true });   // a deleted file opens its folder
+                    Process.Start(new ProcessStartInfo("explorer.exe", revealArgs!) { UseShellExecute = true });   // a deleted file opens its folder
                     break;
                 case SearchAction.OpenFolder:
                     Process.Start(new ProcessStartInfo("explorer.exe", $"\"{(h.IsFolder ? h.Full : h.Dir)}\"") { UseShellExecute = true });

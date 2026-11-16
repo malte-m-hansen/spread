@@ -41,15 +41,17 @@ internal static class SearchKeys
     };
 
     /// <summary>The hint under the results: all meanings when no key is held, only the held key's meaning otherwise.</summary>
-    public static string Hint(KeyTarget target, ModifierKeys mods, SearchKeysConfig c)
+    /// <param name="hasLocation">False for an app without a program folder (Store apps): its Alt action then just opens it, and the hint says so.</param>
+    public static string Hint(KeyTarget target, ModifierKeys mods, SearchKeysConfig c, bool hasLocation = true)
     {
+        SearchAction Act(ModifierKeys m) { var a = Resolve(target, m, c); return target == KeyTarget.App && !hasLocation && a is SearchAction.Reveal or SearchAction.OpenFolder ? SearchAction.Default : a; }
         if (mods != ModifierKeys.None && (mods & (ModifierKeys.Alt | ModifierKeys.Control | ModifierKeys.Shift)) != 0)
         {
-            var a = Resolve(target, mods, c);
+            var a = Act(mods);
             string key = mods.HasFlag(ModifierKeys.Alt) ? "Alt" : mods.HasFlag(ModifierKeys.Control) ? "Ctrl" : "Shift";
             return $"{key} + Enter / click: {Label(a, target)}";
         }
-        string Part(string key, ModifierKeys m) { var a = Resolve(target, m, c); return a == SearchAction.Default ? "" : $"   {key}: {Label(a, target)}"; }
+        string Part(string key, ModifierKeys m) { var a = Act(m); return a == SearchAction.Default ? "" : $"   {key}: {Label(a, target)}"; }
         return "Enter: " + Label(SearchAction.Default, target) + Part("Ctrl", ModifierKeys.Control) + Part("Shift", ModifierKeys.Shift) + Part("Alt", ModifierKeys.Alt);
     }
 }

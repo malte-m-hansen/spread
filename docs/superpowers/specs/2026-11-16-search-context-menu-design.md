@@ -23,8 +23,11 @@ Shift (open with) and Alt (copy path), but only as hidden keys; apps have nothin
 - No change to what Ctrl/Shift/Alt do for files.
 
 ## Constraints
-- Windows start-menu ids (`Get-StartApps`) are `{KnownFolderGuid}\relative\app.exe`, absolute paths, or
-  `Package!App` (Store). There is no existing id-to-path code; it has to be written.
+- Windows start-menu ids (`Get-StartApps`) are `{KnownFolderGuid}\relative\app.exe`, absolute paths, an AppUserModelID
+  (`Chrome`, `308046B0AF4A39CB`, ...), or `Package!App` (Store). There is no existing id-to-path code; it has to be written.
+  AppUserModelIDs are resolved through the shell (`shell:AppsFolder`, property `System.Link.TargetParsingPath`); added after
+  the final review found that about half of the start-menu apps on the author machine are of this kind (242 of 306 resolve now).
+  Web links and Store apps have no location.
 - Copy path never closes the overview (as the file Alt action today); every other choice does, as today.
 
 ## Approaches

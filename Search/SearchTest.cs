@@ -194,11 +194,12 @@ internal static class SearchTest
             Check("keys: Alt on an app = open file location (default)", SearchKeys.Resolve(KeyTarget.App, Alt, k) == SearchAction.Reveal);
             Check("keys: the same action reads 'open file location' for an app and 'show in Explorer' for a file", SearchKeys.Label(SearchAction.Reveal, KeyTarget.App) == "open file location" && SearchKeys.Label(SearchAction.Reveal, KeyTarget.File) == "show in Explorer");
             Check("keys: a saved AppAlt = default is still honoured", SearchKeys.Resolve(KeyTarget.App, Alt, new SearchKeysConfig { AppAlt = "default" }) == SearchAction.Default);
+            Check("keys: hint for Alt on an app without a location says it just opens", SearchKeys.Hint(KeyTarget.App, Alt, k, hasLocation: false) == "Alt + Enter / click: open / go to it", SearchKeys.Hint(KeyTarget.App, Alt, k, hasLocation: false));
             Check("keys: hint for Alt on an app", SearchKeys.Hint(KeyTarget.App, Alt, k) == "Alt + Enter / click: open file location", SearchKeys.Hint(KeyTarget.App, Alt, k));
         }
 
         if (args.Contains("--live")) _fail += Live(cfg).GetAwaiter().GetResult();
-        LocationChecks();
+        LocationChecks(args.Contains("--live"));
         MenuChecks();
         Console.WriteLine(_fail == 0 ? "SEARCH TEST PASSED" : $"SEARCH TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
@@ -226,7 +227,7 @@ internal static class SearchTest
     }
 
     /// <summary>App id -> program path, and the Explorer arguments for "show in Explorer".</summary>
-    static void LocationChecks()
+    static void LocationChecks(bool live)
     {
         Console.WriteLine("Open file location:");
         const string pf = @"C:\Program Files";
@@ -240,9 +241,23 @@ internal static class SearchTest
         Check("location: Store ids, URLs, unknown folders and empty text have none",
             AppLocation.Resolve("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App", Known, Exists) == null && AppLocation.Resolve("https://example.com", Known, Exists) == null
             && AppLocation.Resolve(@"{00000000-0000-0000-0000-000000000000}\x.exe", Known, Exists) == null && AppLocation.Resolve("", Known, Exists) == null);
+        const string chrome = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
+        present.Add(chrome);
+        string? Shell(string aumid) => aumid switch { "Chrome" => chrome, "Web" => "https://nodejs.org/", "Store!App" => "", "Gone" => @"C:\gone\x.exe", _ => null };
+        Check("location: an AppUserModelID app (Chrome) resolves through the shell", AppLocation.Resolve("Chrome", Known, Exists, Shell) == chrome);
+        Check("location: web links, Store apps, a vanished target and unknown ids still have none",
+            AppLocation.Resolve("Web", Known, Exists, Shell) == null && AppLocation.Resolve("Store!App", Known, Exists, Shell) == null
+            && AppLocation.Resolve("Gone", Known, Exists, Shell) == null && AppLocation.Resolve("Nope", Known, Exists, Shell) == null);
+        Check("explorer: a stale hit directly under a drive root opens the root, unquoted (a trailing backslash would eat the quote)", AppLocation.RevealArguments(@"C:\x.txt", p => p == @"C:\") == @"C:\");
         Check("explorer: an existing file is selected, the path quoted (spaces, &)", AppLocation.RevealArguments(@"C:\a b\c&d.txt", p => p == @"C:\a b\c&d.txt") == @"/select,""C:\a b\c&d.txt""");
         Check("explorer: a deleted file opens its folder", AppLocation.RevealArguments(@"C:\a b\c&d.txt", Exists) == @"""C:\a b""");
         Check("explorer: nothing left to show = null", AppLocation.RevealArguments(@"D:\gone\x.txt", Exists) == null);
+        if (!live) return;
+        // your real start-menu apps (counts only, no names): how many have a program folder
+        var catalog = new AppCatalog(); catalog.LoadAsync().GetAwaiter().GetResult();
+        int total = catalog.All.Count, found = catalog.All.Count(a => AppLocation.Resolve(a.AppId) != null);
+        Console.WriteLine($"  live: {found} of {total} start-menu apps have a file location (the rest are Store apps and web links)");
+        Check("location (live): most desktop apps resolve", total == 0 || found * 2 > total, $"{found}/{total}");
     }
 
     /// <summary>The right-click menu entries per result kind.</summary>
