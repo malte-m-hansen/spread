@@ -1581,7 +1581,8 @@ internal sealed class OverlayWindow : Window
             var tile = new Border { Width = 124, Padding = new Thickness(6, 8, 6, 8), Margin = new Thickness(3), CornerRadius = new CornerRadius(16), Background = Brushes.Transparent, Child = sp, Tag = item, Cursor = Cursors.Hand };
             var it2 = item;
             tile.MouseEnter += (_, _) => { if (!_hoverArmed) return; _fileSel = -1; _sel = _results.IndexOf(it2); UpdateSelection(); };
-            tile.MouseLeftButtonUp += (_, _) => OpenItem(it2, NewWin(Keyboard.Modifiers));
+            tile.MouseLeftButtonUp += (_, _) => OpenItem(it2, Keyboard.Modifiers);
+            tile.MouseRightButtonUp += (_, ev) => { if (it2.Kind != SearchKind.App) return; ev.Handled = true; _fileSel = -1; _sel = _results.IndexOf(it2); UpdateSelection(); ShowResultMenu(tile, it2, null, atMouse: true); };
             _tiles.Add(tile); _stripPanel.Children.Add(tile);
         }
         _stripScroll.Visibility = _results.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -1740,6 +1741,7 @@ internal sealed class OverlayWindow : Window
             var row = new Border { Child = g, Padding = new Thickness(6, 4, 6, 4), CornerRadius = new CornerRadius(8), Background = Brushes.Transparent, Cursor = Cursors.Hand, ToolTip = h.Full };
             row.MouseEnter += (_, _) => { if (!_hoverArmed) return; _fileSel = idx; UpdateSelection(); };
             row.MouseLeftButtonUp += (_, _) => OpenFile(h, Keyboard.Modifiers);
+            row.MouseRightButtonUp += (_, ev) => { ev.Handled = true; _fileSel = idx; UpdateSelection(); ShowResultMenu(row, null, h, atMouse: true); };
             _fileRows.Add(row); _filesPanel.Children.Add(row);
         }
         if (_fileTotal > _files.Count)
@@ -1762,18 +1764,19 @@ internal sealed class OverlayWindow : Window
         _everything.ShowAll(text);
     }
 
-    void OpenFile(EverythingHit h, ModifierKeys mods)
+    void OpenFile(EverythingHit h, ModifierKeys mods) => RunFileAction(h, SearchKeys.Resolve(KeyTarget.File, mods, _cfg.Search.Keys));
+
+    void RunFileAction(EverythingHit h, SearchAction action)
     {
         try
         {
-            var action = SearchKeys.Resolve(KeyTarget.File, mods, _cfg.Search.Keys);
             if (action == SearchAction.CopyPath) { Clipboard.SetText(h.Full); return; }
             var before = new HashSet<IntPtr>(_cache.Get(out _).Select(w => w.Hwnd));
             BeginClose(IntPtr.Zero);
             switch (action)
             {
                 case SearchAction.Reveal:
-                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{h.Full}\"") { UseShellExecute = true });
+                    if (AppLocation.RevealArguments(h.Full) is { } rev) Process.Start(new ProcessStartInfo("explorer.exe", rev) { UseShellExecute = true });   // a deleted file opens its folder
                     break;
                 case SearchAction.OpenFolder:
                     Process.Start(new ProcessStartInfo("explorer.exe", $"\"{(h.IsFolder ? h.Full : h.Dir)}\"") { UseShellExecute = true });
@@ -1793,6 +1796,108 @@ internal sealed class OverlayWindow : Window
             BringNewWindowToFront(before);
         }
         catch (Exception e) { Log.Write("open file failed: " + e.GetType().Name); }
+    }
+
+    bool _menuOpen;
+
+    /// <summary>Enter or a click on an icon-line result with the held keys (config Search.Keys): new window, open file location, or the normal open.</summary>
+    void OpenItem(SearchItem item, ModifierKeys mods)
+    {
+        var action = item.Kind == SearchKind.App ? SearchKeys.Resolve(KeyTarget.App, mods, _cfg.Search.Keys) : SearchAction.Default;
+        if (item.App != null && (action is SearchAction.Reveal or SearchAction.OpenFolder) && RevealApp(item.App)) return;
+        OpenItem(item, NewWin(mods));   // no location (Store app): open it as usual
+    }
+
+    /// <summary>Show the program of a start-menu app in Explorer. False when it has no location.</summary>
+    bool RevealApp(AppEntry app)
+    {
+        string? path = AppLocation.Resolve(app.AppId);
+        string? args = path == null ? null : AppLocation.RevealArguments(path);
+        if (args == null) return false;
+        try
+        {
+            var before = new HashSet<IntPtr>(_cache.Get(out _).Select(w => w.Hwnd));
+            BeginClose(IntPtr.Zero);
+            Process.Start(new ProcessStartInfo("explorer.exe", args) { UseShellExecute = true });
+            BringNewWindowToFront(before);
+        }
+        catch (Exception e) { Log.Write("open file location failed: " + e.GetType().Name); }
+        return true;
+    }
+
+    /// <summary>The right-click menu of an app tile or a file row (also Menu key / Shift+F10 on the selection).</summary>
+    void ShowResultMenu(FrameworkElement anchor, SearchItem? item, EverythingHit? hit, bool atMouse)
+    {
+        IReadOnlyList<MenuEntry> entries;
+        Action<MenuAction> run;
+        if (item?.App is { } app && item.Kind == SearchKind.App)
+        {
+            string? loc = AppLocation.Resolve(app.AppId);
+            bool pinned = _cfg.Dock.Pinned.Any(p => DockBuilder.ResolvePin(p, _apps.All) == app);
+            entries = ResultMenu.ForApp(loc, pinned);
+            run = a => RunAppMenu(item, app, loc, a);
+        }
+        else if (hit != null) { entries = ResultMenu.ForFile(hit.IsFolder); run = a => RunFileMenu(hit, a); }
+        else return;
+
+        var m = new ContextMenu();
+        foreach (var e in entries)
+        {
+            var mi = new MenuItem { Header = e.Header };
+            var act = e.Action;
+            mi.Click += (_, _) => run(act);
+            m.Items.Add(mi);
+        }
+        m.PlacementTarget = anchor;
+        m.Placement = atMouse ? System.Windows.Controls.Primitives.PlacementMode.MousePoint : System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        m.Opened += (_, _) => _menuOpen = true;
+        m.Closed += (_, _) => _menuOpen = false;
+        m.IsOpen = true;
+    }
+
+    void OpenSelectionMenu()
+    {
+        if (_fileSel >= 0) { if (_fileSel < _files.Count && _fileSel < _fileRows.Count) ShowResultMenu(_fileRows[_fileSel], null, _files[_fileSel], atMouse: false); }
+        else if (_sel >= 0 && _sel < _results.Count && _sel < _tiles.Count) ShowResultMenu(_tiles[_sel], _results[_sel], null, atMouse: false);
+    }
+
+    void RunAppMenu(SearchItem item, AppEntry app, string? location, MenuAction action)
+    {
+        switch (action)
+        {
+            case MenuAction.Open: OpenItem(item, false); break;
+            case MenuAction.NewWindow: OpenItem(item, true); break;
+            case MenuAction.OpenLocation: RevealApp(app); break;
+            case MenuAction.CopyPath: CopyText(location); break;
+            case MenuAction.Pin:
+                if (!_cfg.Dock.Pinned.Any(p => DockBuilder.ResolvePin(p, _apps.All) == app)) _cfg.Dock.Pinned.Add("id:" + app.AppId);
+                PinsChanged();
+                break;
+            case MenuAction.Unpin:
+                _cfg.Dock.Pinned.RemoveAll(p => DockBuilder.ResolvePin(p, _apps.All) == app);
+                PinsChanged();
+                break;
+        }
+    }
+
+    void RunFileMenu(EverythingHit hit, MenuAction action)
+    {
+        switch (action)
+        {
+            case MenuAction.Open: RunFileAction(hit, SearchAction.Default); break;
+            case MenuAction.ShowInExplorer: RunFileAction(hit, SearchAction.Reveal); break;
+            case MenuAction.OpenWith: RunFileAction(hit, SearchAction.OpenWith); break;
+            case MenuAction.CopyPath: CopyText(hit.Full); break;
+        }
+    }
+
+    void PinsChanged() { _cfg.Save(); RebuildDock(); Relayout(animate: true); }
+
+    /// <summary>Copy without closing the overview; the clipboard can be locked by another program for a moment.</summary>
+    static void CopyText(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        try { Clipboard.SetText(text); } catch (Exception e) { Log.Write("copy path failed: " + e.GetType().Name); }
     }
 
     /// <summary>Keys while a search is active: Left/Right in the icon line, Up/Down between the line and the file list.</summary>
@@ -1820,13 +1925,16 @@ internal sealed class OverlayWindow : Window
                 if (inFiles && _results.Count > 0) { _fileSel = -1; if (_sel < 0) _sel = 0; }
                 else if (!inFiles && rows > 0) _fileSel = 0;
                 UpdateSelection(); return true;
+            case Key.Apps:
+            case Key.F10 when mods.HasFlag(ModifierKeys.Shift):
+                OpenSelectionMenu(); return true;
             case Key.Enter:
                 if (inFiles)
                 {
                     if (_fileSel < _files.Count) OpenFile(_files[_fileSel], mods);
                     else ShowAllInEverything();
                 }
-                else if (_sel >= 0 && _sel < _results.Count) OpenItem(_results[_sel], NewWin(mods));
+                else if (_sel >= 0 && _sel < _results.Count) OpenItem(_results[_sel], mods);
                 return true;
             default: return false;
         }
@@ -1935,7 +2043,7 @@ internal sealed class OverlayWindow : Window
     void OnKey(object sender, KeyEventArgs e)
     {
         if (_state is State.Closing or State.Hidden) { e.Handled = true; return; }
-        if (_pickerOpen) return;   // the app picker of the dock owns the keyboard
+        if (_pickerOpen || _menuOpen) return;   // the app picker of the dock and a result menu own the keyboard
         if (SearchMode && e.Key != Key.Escape && SearchKey(e)) { e.Handled = true; return; }
         switch (e.Key)
         {
@@ -2016,7 +2124,7 @@ internal sealed class OverlayWindow : Window
         if (SearchMode)
         {
             int i = _sel >= 0 ? _sel : 0;
-            if (i < _results.Count) OpenItem(_results[i], NewWin(Keyboard.Modifiers));   // Ctrl/Shift+Enter: new instance (config Search.Keys)
+            if (i < _results.Count) OpenItem(_results[i], Keyboard.Modifiers);   // Ctrl/Shift+Enter: new instance (config Search.Keys)
         }
         else if (SelectedItem() is { } it) ActivateWindow(it);
     }
