@@ -280,12 +280,13 @@ internal static class SearchTest
     {
         Console.WriteLine("Result menu:");
         static string H(IReadOnlyList<MenuEntry> m) => string.Join("|", m.Select(e => e.Header));
-        Check("menu: app with a location", H(ResultMenu.ForApp(@"C:\x.exe", false)) == "Open|New window|Open file location|Copy path|Pin to dock", H(ResultMenu.ForApp(@"C:\x.exe", false)));
-        Check("menu: a pinned app offers Unpin", H(ResultMenu.ForApp(@"C:\x.exe", true)) == "Open|New window|Open file location|Copy path|Unpin from dock");
+        Check("menu: app with a location", H(ResultMenu.ForApp(@"C:\x.exe", false)) == "Open|New window|Run as administrator|Open file location|Copy path|Pin to dock", H(ResultMenu.ForApp(@"C:\x.exe", false)));
+        Check("menu: a pinned app offers Unpin", H(ResultMenu.ForApp(@"C:\x.exe", true)) == "Open|New window|Run as administrator|Open file location|Copy path|Unpin from dock");
+        Check("menu: a program that cannot be elevated (help file) has the location entries but no Run as administrator", H(ResultMenu.ForApp(@"C:\x\help.chm", false)) == "Open|New window|Open file location|Copy path|Pin to dock", H(ResultMenu.ForApp(@"C:\x\help.chm", false)));
         Check("menu: an app without a location (Store) has no location entries", H(ResultMenu.ForApp(null, false)) == "Open|New window|Pin to dock", H(ResultMenu.ForApp(null, false)));
         Check("menu: file", H(ResultMenu.ForFile(false)) == "Open|Show in Explorer|Open with\u2026|Copy path", H(ResultMenu.ForFile(false)));
         Check("menu: folder has no Open with", H(ResultMenu.ForFile(true)) == "Open|Show in Explorer|Copy path", H(ResultMenu.ForFile(true)));
-        Check("menu: actions match the entries", ResultMenu.ForApp(@"C:\x.exe", true).Select(e => e.Action).SequenceEqual(new[] { MenuAction.Open, MenuAction.NewWindow, MenuAction.OpenLocation, MenuAction.CopyPath, MenuAction.Unpin })
+        Check("menu: actions match the entries", ResultMenu.ForApp(@"C:\x.exe", true).Select(e => e.Action).SequenceEqual(new[] { MenuAction.Open, MenuAction.NewWindow, MenuAction.RunAsAdmin, MenuAction.OpenLocation, MenuAction.CopyPath, MenuAction.Unpin })
             && ResultMenu.ForFile(false).Select(e => e.Action).SequenceEqual(new[] { MenuAction.Open, MenuAction.ShowInExplorer, MenuAction.OpenWith, MenuAction.CopyPath }));
     }
 }

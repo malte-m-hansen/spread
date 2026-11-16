@@ -1896,6 +1896,7 @@ internal sealed class OverlayWindow : Window
         {
             case MenuAction.Open: OpenItem(item, false); break;
             case MenuAction.NewWindow: OpenItem(item, true); break;
+            case MenuAction.RunAsAdmin: RunAsAdmin(item); break;
             case MenuAction.OpenLocation: RevealApp(app); break;
             case MenuAction.CopyPath: CopyText(location); break;
             case MenuAction.Pin:

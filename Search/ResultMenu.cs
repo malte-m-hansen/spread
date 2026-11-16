@@ -2,7 +2,7 @@ using System.Collections.Generic;
 
 namespace Spread;
 
-internal enum MenuAction { Open, NewWindow, OpenLocation, CopyPath, Pin, Unpin, ShowInExplorer, OpenWith }
+internal enum MenuAction { Open, NewWindow, RunAsAdmin, OpenLocation, CopyPath, Pin, Unpin, ShowInExplorer, OpenWith }
 
 internal sealed record MenuEntry(MenuAction Action, string Header);
 
@@ -13,6 +13,7 @@ internal static class ResultMenu
     public static IReadOnlyList<MenuEntry> ForApp(string? location, bool pinned)
     {
         var list = new List<MenuEntry> { new(MenuAction.Open, "Open"), new(MenuAction.NewWindow, "New window") };
+        if (location != null && AppLocation.CanRunAsAdmin(location)) list.Add(new(MenuAction.RunAsAdmin, "Run as administrator"));
         if (location != null)
         {
             list.Add(new(MenuAction.OpenLocation, "Open file location"));

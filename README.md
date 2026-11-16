@@ -19,7 +19,7 @@ It is a single WPF application (.NET 8). It does not replace Explorer; it sits o
 - Windows settings pages and tools ("check for updates", "device manager").
 - Files through [Everything](https://www.voidtools.com/), if it is running.
 - An app that is already running is switched to instead of started again.
-- Right click an app or a file for a menu: open, new window, open file location, copy path and pin to dock for apps; show in Explorer, open with and copy path for files.
+- Right click an app or a file for a menu: open, new window, run as administrator, open file location, copy path and pin to dock for apps; show in Explorer, open with and copy path for files.
 
 **Dock**
 - Pinned and running apps at the bottom of the overview.
