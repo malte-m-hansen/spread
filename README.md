@@ -19,6 +19,7 @@ It is a single WPF application (.NET 8). It does not replace Explorer; it sits o
 - Windows settings pages and tools ("check for updates", "device manager").
 - Files through [Everything](https://www.voidtools.com/), if it is running.
 - An app that is already running is switched to instead of started again.
+- Right click an app or a file for a menu: open, new window, run as administrator, open file location, copy path and pin to dock for apps; show in Explorer, open with and copy path for files.
 
 **Dock**
 - Pinned and running apps at the bottom of the overview.
@@ -73,9 +74,13 @@ To start it with Windows, use "Start with Windows" in the tray icon's menu.
 | Close a window | Its close button, middle click, or Ctrl+W on the selected window |
 | Flip through a photo stack | Mouse wheel, or Page Up / Page Down |
 | Search | Just start typing; Enter opens the selected result |
-| Search result in a new window / show file in Explorer | Ctrl+Enter (configurable under `Search.Keys`) |
+| Open an app in a new window / open a file with... | Ctrl+Enter or Shift+Enter (the keys are the same for apps and files; see `Search.Keys`) |
+| Run as administrator | Ctrl+Shift+Enter on an app or a program file (Windows asks for permission, like the taskbar search). Store apps and documents cannot be elevated and just open |
+| Open the location of a result | Alt+Enter (an app: its program folder; a file: shown in Explorer), or right click it. Menu key or Shift+F10 opens the menu for the selected result. Copy path is in the menu |
 | Leave the overview | Esc (the first Esc clears the search), or click on empty space |
 | Show the real taskbar | Ctrl+Alt+T, or the Taskbar button in the top bar |
+
+Apps and files use the same keys. They are set under `Search.Keys` in the config: `AppAlt` / `FileAlt` (Alt, default `reveal`), `AppCtrlShift` / `FileCtrlShift` (default `runAsAdmin`), `AppCtrl` / `AppShift` (default `newWindow`) and `FileCtrl` / `FileShift` (default `openWith`). A config.json that still has the previous defaults (Alt on an app `default`, Ctrl on a file `reveal`, Alt on a file `copyPath`) is updated the first time this version starts; keys you changed on purpose are left alone. Store apps and web links have no program folder, so they have no location entries and Alt and Ctrl+Shift just open them.
 
 Touchpad gestures can be mapped to the overview: set a three-finger swipe in Windows to send Ctrl+Alt+Down / Left / Right (see `GestureSelectHotkey` in the config).
 

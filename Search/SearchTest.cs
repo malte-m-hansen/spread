@@ -184,15 +184,36 @@ internal static class SearchTest
             var M = System.Windows.Input.ModifierKeys.None;
             Check("keys: nothing held = the normal action", SearchKeys.Resolve(KeyTarget.App, M, k) == SearchAction.Default && SearchKeys.Resolve(KeyTarget.File, M, k) == SearchAction.Default);
             Check("keys: Ctrl and Shift on an app = new window", SearchKeys.Resolve(KeyTarget.App, System.Windows.Input.ModifierKeys.Control, k) == SearchAction.NewWindow && SearchKeys.Resolve(KeyTarget.App, System.Windows.Input.ModifierKeys.Shift, k) == SearchAction.NewWindow);
-            Check("keys: file Ctrl = show in Explorer, Shift = open with, Alt = copy path", SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Control, k) == SearchAction.Reveal && SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Shift, k) == SearchAction.OpenWith && SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Alt, k) == SearchAction.CopyPath);
-            Check("keys: Ctrl+Shift counts as Ctrl, Alt wins over both", SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Shift, k) == SearchAction.Reveal && SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Alt | System.Windows.Input.ModifierKeys.Control, k) == SearchAction.CopyPath);
+            Check("keys: file Ctrl and Shift = open with, Alt = show in Explorer", SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Control, k) == SearchAction.OpenWith && SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Shift, k) == SearchAction.OpenWith && SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Alt, k) == SearchAction.Reveal);
+            Check("keys: file Ctrl+Shift = run as administrator (like an app), and Alt wins over both", SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Shift, k) == SearchAction.RunAsAdmin && SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Alt | System.Windows.Input.ModifierKeys.Control, k) == SearchAction.Reveal);
             var odd = new SearchKeysConfig { FileCtrl = "nonsense", AppShift = "default", FileAlt = "openFolder" };
-            Check("keys: unknown text falls back to the default mapping, config can change one", SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Control, odd) == SearchAction.Reveal && SearchKeys.Resolve(KeyTarget.App, System.Windows.Input.ModifierKeys.Shift, odd) == SearchAction.Default && SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Alt, odd) == SearchAction.OpenFolder);
+            Check("keys: unknown text falls back to the default mapping, config can change one", SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Control, odd) == SearchAction.OpenWith && SearchKeys.Resolve(KeyTarget.App, System.Windows.Input.ModifierKeys.Shift, odd) == SearchAction.Default && SearchKeys.Resolve(KeyTarget.File, System.Windows.Input.ModifierKeys.Alt, odd) == SearchAction.OpenFolder);
             string h0 = SearchKeys.Hint(KeyTarget.File, M, k), h1 = SearchKeys.Hint(KeyTarget.App, System.Windows.Input.ModifierKeys.Control, k);
-            Check("keys: hint lists every meaning, or only the held key's", h0.Contains("Ctrl: show in Explorer") && h0.Contains("Shift: open with") && h0.Contains("Alt: copy path") && h1 == "Ctrl + Enter / click: new window", h0 + " | " + h1);
+            Check("keys: hint lists every meaning, or only the held key's", h0.Contains("Ctrl: open with") && h0.Contains("Shift: open with") && h0.Contains("Alt: show in Explorer") && h0.Contains("Ctrl+Shift: run as administrator") && h1 == "Ctrl + Enter / click: new window", h0 + " | " + h1);
+            var Alt = System.Windows.Input.ModifierKeys.Alt;
+            Check("keys: Alt on an app = open file location (default)", SearchKeys.Resolve(KeyTarget.App, Alt, k) == SearchAction.Reveal);
+            Check("keys: the same action reads 'open file location' for an app and 'show in Explorer' for a file", SearchKeys.Label(SearchAction.Reveal, KeyTarget.App) == "open file location" && SearchKeys.Label(SearchAction.Reveal, KeyTarget.File) == "show in Explorer");
+            Check("keys: a saved AppAlt = default is still honoured", SearchKeys.Resolve(KeyTarget.App, Alt, new SearchKeysConfig { AppAlt = "default" }) == SearchAction.Default);
+            Check("keys: hint for Alt on an app without a location says it just opens", SearchKeys.Hint(KeyTarget.App, Alt, k, hasLocation: false) == "Alt + Enter / click: open / go to it", SearchKeys.Hint(KeyTarget.App, Alt, k, hasLocation: false));
+            var CtrlShift = System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Shift;
+            Check("keys: Ctrl+Shift on an app = run as administrator; Ctrl and Shift alone are still new window",
+                SearchKeys.Resolve(KeyTarget.App, CtrlShift, k) == SearchAction.RunAsAdmin && SearchKeys.Resolve(KeyTarget.App, System.Windows.Input.ModifierKeys.Control, k) == SearchAction.NewWindow
+                && SearchKeys.Resolve(KeyTarget.App, System.Windows.Input.ModifierKeys.Shift, k) == SearchAction.NewWindow);
+            Check("keys: Alt still wins over Ctrl+Shift on an app", SearchKeys.Resolve(KeyTarget.App, CtrlShift | Alt, k) == SearchAction.Reveal);
+            Check("keys: the file Ctrl+Shift action can be changed in the config", SearchKeys.Resolve(KeyTarget.File, CtrlShift, new SearchKeysConfig { FileCtrlShift = "openWith" }) == SearchAction.OpenWith);
+            Check("keys: file hint for Ctrl+Shift: run as administrator, or just open for a file that is no program",
+                SearchKeys.Hint(KeyTarget.File, CtrlShift, k) == "Ctrl+Shift + Enter / click: run as administrator" && SearchKeys.Hint(KeyTarget.File, CtrlShift, k, canRunAsAdmin: false) == "Ctrl+Shift + Enter / click: open", SearchKeys.Hint(KeyTarget.File, CtrlShift, k, canRunAsAdmin: false));
+            Check("keys: the Ctrl+Shift action can be changed in the config", SearchKeys.Resolve(KeyTarget.App, CtrlShift, new SearchKeysConfig { AppCtrlShift = "newWindow" }) == SearchAction.NewWindow);
+            Check("keys: label and hints for run as administrator", SearchKeys.Label(SearchAction.RunAsAdmin, KeyTarget.App) == "run as administrator"
+                && SearchKeys.Hint(KeyTarget.App, CtrlShift, k) == "Ctrl+Shift + Enter / click: run as administrator"
+                && SearchKeys.Hint(KeyTarget.App, System.Windows.Input.ModifierKeys.None, k).Contains("Ctrl+Shift: run as administrator"), SearchKeys.Hint(KeyTarget.App, CtrlShift, k));
+            Check("keys: an app that cannot run elevated (Store app, help file) says it just opens", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false) == "Ctrl+Shift + Enter / click: open / go to it", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false));
+            Check("keys: hint for Alt on an app", SearchKeys.Hint(KeyTarget.App, Alt, k) == "Alt + Enter / click: open file location", SearchKeys.Hint(KeyTarget.App, Alt, k));
         }
 
         if (args.Contains("--live")) _fail += Live(cfg).GetAwaiter().GetResult();
+        LocationChecks(args.Contains("--live"));
+        MenuChecks();
         Console.WriteLine(_fail == 0 ? "SEARCH TEST PASSED" : $"SEARCH TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
     }
@@ -216,5 +237,61 @@ internal static class SearchTest
         if (!sorted) bad++;
         Console.WriteLine($"  Everything client found at: {(ev.FindExe() != null ? "yes" : "no")}");
         return bad;
+    }
+
+    /// <summary>App id -> program path, and the Explorer arguments for "show in Explorer".</summary>
+    static void LocationChecks(bool live)
+    {
+        Console.WriteLine("Open file location:");
+        const string pf = @"C:\Program Files";
+        string? Known(Guid g) => g == new Guid("6D809377-6AF0-444B-8957-A3773F02200E") ? pf : null;
+        var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { pf + @"\7-Zip\7zFM.exe", @"C:\Tools\a.exe", @"C:\a b" };
+        bool Exists(string p) => present.Contains(p);
+        string id = @"{6D809377-6AF0-444B-8957-A3773F02200E}\7-Zip\7zFM.exe";
+        Check("location: known-folder id becomes the program path", AppLocation.Resolve(id, Known, Exists) == pf + @"\7-Zip\7zFM.exe");
+        Check("location: a program that is gone has no location", AppLocation.Resolve(@"{6D809377-6AF0-444B-8957-A3773F02200E}\7-Zip\gone.exe", Known, Exists) == null);
+        Check("location: an absolute path stays as it is", AppLocation.Resolve(@"C:\Tools\a.exe", Known, Exists) == @"C:\Tools\a.exe");
+        Check("location: Store ids, URLs, unknown folders and empty text have none",
+            AppLocation.Resolve("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App", Known, Exists) == null && AppLocation.Resolve("https://example.com", Known, Exists) == null
+            && AppLocation.Resolve(@"{00000000-0000-0000-0000-000000000000}\x.exe", Known, Exists) == null && AppLocation.Resolve("", Known, Exists) == null);
+        const string chrome = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
+        present.Add(chrome);
+        string? Shell(string aumid) => aumid switch { "Chrome" => chrome, "Web" => "https://nodejs.org/", "Store!App" => "", "Gone" => @"C:\gone\x.exe", _ => null };
+        Check("location: an AppUserModelID app (Chrome) resolves through the shell", AppLocation.Resolve("Chrome", Known, Exists, Shell) == chrome);
+        Check("location: web links, Store apps, a vanished target and unknown ids still have none",
+            AppLocation.Resolve("Web", Known, Exists, Shell) == null && AppLocation.Resolve("Store!App", Known, Exists, Shell) == null
+            && AppLocation.Resolve("Gone", Known, Exists, Shell) == null && AppLocation.Resolve("Nope", Known, Exists, Shell) == null);
+        Check("explorer: a stale hit directly under a drive root opens the root, unquoted (a trailing backslash would eat the quote)", AppLocation.RevealArguments(@"C:\x.txt", p => p == @"C:\") == @"C:\");
+        Check("explorer: an existing file is selected, the path quoted (spaces, &)", AppLocation.RevealArguments(@"C:\a b\c&d.txt", p => p == @"C:\a b\c&d.txt") == @"/select,""C:\a b\c&d.txt""");
+        Check("explorer: a deleted file opens its folder", AppLocation.RevealArguments(@"C:\a b\c&d.txt", Exists) == @"""C:\a b""");
+        var admin = AppLocation.AdminStart(@"C:\Windows\System32\cmd.exe");
+        Check("admin: runs the program through the shell with the runas verb, in its own folder", admin.FileName == @"C:\Windows\System32\cmd.exe" && admin.Verb == "runas" && admin.UseShellExecute && admin.WorkingDirectory == @"C:\Windows\System32");
+        Check("admin: only programs can be elevated, not help files or web links", AppLocation.CanRunAsAdmin(@"C:\x\a.exe") && AppLocation.CanRunAsAdmin(@"C:\x\a.CMD") && AppLocation.CanRunAsAdmin(@"C:\x\a.lnk") && AppLocation.CanRunAsAdmin(@"C:\x\a.msc")
+            && !AppLocation.CanRunAsAdmin(@"C:\x\a.chm") && !AppLocation.CanRunAsAdmin(@"C:\x\a.url") && !AppLocation.CanRunAsAdmin(""));
+        Check("explorer: nothing left to show = null", AppLocation.RevealArguments(@"D:\gone\x.txt", Exists) == null);
+        if (!live) return;
+        // your real start-menu apps (counts only, no names): how many have a program folder
+        var catalog = new AppCatalog(); catalog.LoadAsync().GetAwaiter().GetResult();
+        int total = catalog.All.Count, found = catalog.All.Count(a => AppLocation.Resolve(a.AppId) != null);
+        Console.WriteLine($"  live: {found} of {total} start-menu apps have a file location (the rest are Store apps and web links)");
+        Check("location (live): most desktop apps resolve", total == 0 || found * 2 > total, $"{found}/{total}");
+    }
+
+    /// <summary>The right-click menu entries per result kind.</summary>
+    static void MenuChecks()
+    {
+        Console.WriteLine("Result menu:");
+        static string H(IReadOnlyList<MenuEntry> m) => string.Join("|", m.Select(e => e.Header));
+        Check("menu: app with a location", H(ResultMenu.ForApp(@"C:\x.exe", false)) == "Open|New window|Run as administrator|Open file location|Copy path|Pin to dock", H(ResultMenu.ForApp(@"C:\x.exe", false)));
+        Check("menu: a pinned app offers Unpin", H(ResultMenu.ForApp(@"C:\x.exe", true)) == "Open|New window|Run as administrator|Open file location|Copy path|Unpin from dock");
+        Check("menu: a program that cannot be elevated (help file) has the location entries but no Run as administrator", H(ResultMenu.ForApp(@"C:\x\help.chm", false)) == "Open|New window|Open file location|Copy path|Pin to dock", H(ResultMenu.ForApp(@"C:\x\help.chm", false)));
+        Check("menu: an app without a location (Store) has no location entries", H(ResultMenu.ForApp(null, false)) == "Open|New window|Pin to dock", H(ResultMenu.ForApp(null, false)));
+        Check("menu: file", H(ResultMenu.ForFile(false)) == "Open|Show in Explorer|Open with\u2026|Copy path", H(ResultMenu.ForFile(false)));
+        Check("menu: a program file can be run as administrator, a document or a folder cannot",
+            H(ResultMenu.ForFile(false, @"C:\x\a.exe")) == "Open|Run as administrator|Show in Explorer|Open with\u2026|Copy path" && H(ResultMenu.ForFile(false, @"C:\x\a.docx")) == "Open|Show in Explorer|Open with\u2026|Copy path"
+            && H(ResultMenu.ForFile(true, @"C:\x\dir.exe")) == "Open|Show in Explorer|Copy path", H(ResultMenu.ForFile(false, @"C:\x\a.exe")));
+        Check("menu: folder has no Open with", H(ResultMenu.ForFile(true)) == "Open|Show in Explorer|Copy path", H(ResultMenu.ForFile(true)));
+        Check("menu: actions match the entries", ResultMenu.ForApp(@"C:\x.exe", true).Select(e => e.Action).SequenceEqual(new[] { MenuAction.Open, MenuAction.NewWindow, MenuAction.RunAsAdmin, MenuAction.OpenLocation, MenuAction.CopyPath, MenuAction.Unpin })
+            && ResultMenu.ForFile(false).Select(e => e.Action).SequenceEqual(new[] { MenuAction.Open, MenuAction.ShowInExplorer, MenuAction.OpenWith, MenuAction.CopyPath }));
     }
 }

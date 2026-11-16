@@ -22,8 +22,20 @@ internal static class CoreTest
         RestartChecks();
         WallpaperChecks();
         VersionChecks();
+        AltMenuChecks();
         Console.WriteLine(_fail == 0 ? "CORE TEST PASSED" : $"CORE TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
+    }
+
+    static void AltMenuChecks()
+    {
+        Console.WriteLine("Alt key and the window menu:");
+        const int WM_SYSCOMMAND = 0x0112, WM_KEYDOWN = 0x0100;
+        Check("Alt (alone, or with Space or a letter) would open the window menu: that command is blocked",
+            OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF100) && OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF102));
+        Check("other window commands (minimize, close, move) and other messages are left alone",
+            !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF020) && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF060)
+            && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF010) && !OverlayWindow.IsKeyMenuCommand(WM_KEYDOWN, (IntPtr)0xF100));
     }
 
     static void VersionChecks()
@@ -85,11 +97,26 @@ internal static class CoreTest
 
             File.WriteAllText(file, "{ \"Version\": 1, \"HotEdgeDwellMs\": 150 }");
             c = Config.LoadFrom(file);
-            Check("old file is migrated and written back", c.Version == 15 && c.HotEdgeDwellMs == 40 && File.ReadAllText(file).Contains("\"Version\": 15"));
+            Check("old file is migrated and written back", c.Version == 17 && c.HotEdgeDwellMs == 40 && File.ReadAllText(file).Contains("\"Version\": 17"));
 
             File.Delete(file);
             c = Config.LoadFrom(file);
-            Check("missing file is created with defaults", !c.LoadFailed && File.Exists(file) && c.Version == 15);
+            Check("missing file is created with defaults", !c.LoadFailed && File.Exists(file) && c.Version == 17);
+
+            File.WriteAllText(file, "{ \"Version\": 15, \"Search\": { \"Keys\": { \"AppAlt\": \"default\" } } }");
+            c = Config.LoadFrom(file);
+            Check("v16: the old Alt+Enter default on apps becomes open file location, and is written back", c.Version == 17 && c.Search.Keys.AppAlt == "reveal" && File.ReadAllText(file).Contains("\"AppAlt\": \"reveal\""), c.Search.Keys.AppAlt);
+            c.Search.Keys.AppAlt = "default"; c.Save();
+            Check("v16: a later deliberate choice of default is kept", Config.LoadFrom(file).Search.Keys.AppAlt == "default");
+            File.WriteAllText(file, "{ \"Version\": 15, \"Search\": { \"Keys\": { \"AppAlt\": \"copyPath\" } } }");
+            Check("v16: another saved Alt action is left alone", Config.LoadFrom(file).Search.Keys.AppAlt == "copyPath");
+
+            File.WriteAllText(file, "{ \"Version\": 16, \"Search\": { \"Keys\": { \"FileCtrl\": \"reveal\", \"FileAlt\": \"copyPath\" } } }");
+            c = Config.LoadFrom(file);
+            Check("v17: the old file keys (Ctrl = show in Explorer, Alt = copy path) follow the app keys, and are written back", c.Version == 17 && c.Search.Keys.FileCtrl == "openWith" && c.Search.Keys.FileAlt == "reveal" && File.ReadAllText(file).Contains("\"FileAlt\": \"reveal\""), c.Search.Keys.FileCtrl + "/" + c.Search.Keys.FileAlt);
+            File.WriteAllText(file, "{ \"Version\": 16, \"Search\": { \"Keys\": { \"FileCtrl\": \"openFolder\", \"FileAlt\": \"openWith\" } } }");
+            c = Config.LoadFrom(file);
+            Check("v17: file keys that were changed on purpose are left alone", c.Search.Keys.FileCtrl == "openFolder" && c.Search.Keys.FileAlt == "openWith");
 
             DateTime after = File.Exists(Config.FilePath) ? File.GetLastWriteTimeUtc(Config.FilePath) : DateTime.MinValue;
             Check("the real config.json was not touched", after == realStamp);

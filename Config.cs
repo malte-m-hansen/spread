@@ -61,15 +61,19 @@ internal sealed class SearchConfig
     public SearchKeysConfig Keys { get; set; } = new();
 }
 
-/// <summary>Actions: default, newWindow, reveal (show in Explorer), openWith, copyPath, openFolder.</summary>
+/// <summary>Actions: default, newWindow, reveal (show in Explorer; for an app: open its file location), openWith, copyPath, openFolder, runAsAdmin (apps).</summary>
 internal sealed class SearchKeysConfig
 {
     public string AppCtrl { get; set; } = "newWindow";
     public string AppShift { get; set; } = "newWindow";
-    public string AppAlt { get; set; } = "default";
-    public string FileCtrl { get; set; } = "reveal";
+    /// <summary>Ctrl+Shift+Enter on an app: run it as administrator (the UAC prompt), like the Windows taskbar search.</summary>
+    public string AppCtrlShift { get; set; } = "runAsAdmin";
+    public string AppAlt { get; set; } = "reveal";
+    public string FileCtrl { get; set; } = "openWith";
     public string FileShift { get; set; } = "openWith";
-    public string FileAlt { get; set; } = "copyPath";
+    public string FileAlt { get; set; } = "reveal";
+    /// <summary>Ctrl+Shift+Enter on a file: run it as administrator when it is a program (exe, bat, cmd, msc, lnk), like an app.</summary>
+    public string FileCtrlShift { get; set; } = "runAsAdmin";
     /// <summary>A dim line under the results that says what the held key does.</summary>
     public bool ShowHint { get; set; } = true;
 }
@@ -331,9 +335,25 @@ internal sealed class Config
                     loaded.Version = 15;   // v15: dock
                     Persist(loaded);
                 }
+                if (loaded.Version < 16)
+                {
+                    // v16: Alt+Enter on an app opens its file location. A saved "default" is the previous default, not a choice.
+                    if (string.Equals(loaded.Search.Keys.AppAlt, "default", StringComparison.OrdinalIgnoreCase)) loaded.Search.Keys.AppAlt = "reveal";
+                    loaded.Version = 16;
+                    Persist(loaded);
+                }
+                if (loaded.Version < 17)
+                {
+                    // v17: file results use the same keys as apps (Alt = location, Ctrl = open with). Only the previous defaults move.
+                    var keys = loaded.Search.Keys;
+                    if (string.Equals(keys.FileCtrl, "reveal", StringComparison.OrdinalIgnoreCase)) keys.FileCtrl = "openWith";
+                    if (string.Equals(keys.FileAlt, "copyPath", StringComparison.OrdinalIgnoreCase)) keys.FileAlt = "reveal";
+                    loaded.Version = 17;
+                    Persist(loaded);
+                }
                 return loaded;
             }
-            var c = new Config { Version = 15, TrayStrip = false, _path = path };
+            var c = new Config { Version = 17, TrayStrip = false, _path = path };
             WriteFile(c, path);
             return c;
         }
