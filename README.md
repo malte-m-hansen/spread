@@ -19,6 +19,7 @@ It is a single WPF application (.NET 8). It does not replace Explorer; it sits o
 - Windows settings pages and tools ("check for updates", "device manager").
 - Files through [Everything](https://www.voidtools.com/), if it is running.
 - An app that is already running is switched to instead of started again.
+- Right click an app or a file for a menu: open, new window, open file location, copy path and pin to dock for apps; show in Explorer, open with and copy path for files.
 
 **Dock**
 - Pinned and running apps at the bottom of the overview.
@@ -74,8 +75,11 @@ To start it with Windows, use "Start with Windows" in the tray icon's menu.
 | Flip through a photo stack | Mouse wheel, or Page Up / Page Down |
 | Search | Just start typing; Enter opens the selected result |
 | Search result in a new window / show file in Explorer | Ctrl+Enter (configurable under `Search.Keys`) |
+| Open the location of a result | Right click it, or Alt+Enter on an app (its program folder) / Ctrl+Enter on a file. Menu key or Shift+F10 opens the menu for the selected result |
 | Leave the overview | Esc (the first Esc clears the search), or click on empty space |
 | Show the real taskbar | Ctrl+Alt+T, or the Taskbar button in the top bar |
+
+Alt+Enter on an app is `Search.Keys.AppAlt`, which defaults to `reveal`. A config.json from an older version may have `"AppAlt": "default"` saved; change it to `"reveal"` to get the new behavior. Store apps have no program folder, so they have no location entries and Alt+Enter just opens them.
 
 Touchpad gestures can be mapped to the overview: set a three-finger swipe in Windows to send Ctrl+Alt+Down / Left / Right (see `GestureSelectHotkey` in the config).
 
