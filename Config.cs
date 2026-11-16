@@ -69,9 +69,11 @@ internal sealed class SearchKeysConfig
     /// <summary>Ctrl+Shift+Enter on an app: run it as administrator (the UAC prompt), like the Windows taskbar search.</summary>
     public string AppCtrlShift { get; set; } = "runAsAdmin";
     public string AppAlt { get; set; } = "reveal";
-    public string FileCtrl { get; set; } = "reveal";
+    public string FileCtrl { get; set; } = "openWith";
     public string FileShift { get; set; } = "openWith";
-    public string FileAlt { get; set; } = "copyPath";
+    public string FileAlt { get; set; } = "reveal";
+    /// <summary>Ctrl+Shift+Enter on a file: run it as administrator when it is a program (exe, bat, cmd, msc, lnk), like an app.</summary>
+    public string FileCtrlShift { get; set; } = "runAsAdmin";
     /// <summary>A dim line under the results that says what the held key does.</summary>
     public bool ShowHint { get; set; } = true;
 }
@@ -340,9 +342,18 @@ internal sealed class Config
                     loaded.Version = 16;
                     Persist(loaded);
                 }
+                if (loaded.Version < 17)
+                {
+                    // v17: file results use the same keys as apps (Alt = location, Ctrl = open with). Only the previous defaults move.
+                    var keys = loaded.Search.Keys;
+                    if (string.Equals(keys.FileCtrl, "reveal", StringComparison.OrdinalIgnoreCase)) keys.FileCtrl = "openWith";
+                    if (string.Equals(keys.FileAlt, "copyPath", StringComparison.OrdinalIgnoreCase)) keys.FileAlt = "reveal";
+                    loaded.Version = 17;
+                    Persist(loaded);
+                }
                 return loaded;
             }
-            var c = new Config { Version = 16, TrayStrip = false, _path = path };
+            var c = new Config { Version = 17, TrayStrip = false, _path = path };
             WriteFile(c, path);
             return c;
         }

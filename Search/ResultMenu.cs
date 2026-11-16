@@ -23,9 +23,12 @@ internal static class ResultMenu
         return list;
     }
 
-    public static IReadOnlyList<MenuEntry> ForFile(bool isFolder)
+    /// <param name="path">The full path: a program file also offers Run as administrator.</param>
+    public static IReadOnlyList<MenuEntry> ForFile(bool isFolder, string? path = null)
     {
-        var list = new List<MenuEntry> { new(MenuAction.Open, "Open"), new(MenuAction.ShowInExplorer, "Show in Explorer") };
+        var list = new List<MenuEntry> { new(MenuAction.Open, "Open") };
+        if (!isFolder && path != null && AppLocation.CanRunAsAdmin(path)) list.Add(new(MenuAction.RunAsAdmin, "Run as administrator"));
+        list.Add(new(MenuAction.ShowInExplorer, "Show in Explorer"));
         if (!isFolder) list.Add(new(MenuAction.OpenWith, "Open with…"));
         list.Add(new(MenuAction.CopyPath, "Copy path"));
         return list;

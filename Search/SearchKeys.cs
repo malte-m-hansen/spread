@@ -21,13 +21,13 @@ internal static class SearchKeys
         _ => fallback
     };
 
-    /// <summary>Alt first, then Ctrl+Shift (an app: run as administrator; a file: counts as Ctrl), then Ctrl, then Shift; nothing held = Default.</summary>
+    /// <summary>Alt first, then Ctrl+Shift (run as administrator), then Ctrl, then Shift; nothing held = Default. Apps and files use the same keys.</summary>
     public static SearchAction Resolve(KeyTarget target, ModifierKeys mods, SearchKeysConfig c)
     {
         bool app = target == KeyTarget.App;
-        if (mods.HasFlag(ModifierKeys.Alt)) return Parse(app ? c.AppAlt : c.FileAlt, app ? SearchAction.Reveal : SearchAction.CopyPath);
-        if (app && mods.HasFlag(ModifierKeys.Control) && mods.HasFlag(ModifierKeys.Shift)) return Parse(c.AppCtrlShift, SearchAction.RunAsAdmin);
-        if (mods.HasFlag(ModifierKeys.Control)) return Parse(app ? c.AppCtrl : c.FileCtrl, app ? SearchAction.NewWindow : SearchAction.Reveal);
+        if (mods.HasFlag(ModifierKeys.Alt)) return Parse(app ? c.AppAlt : c.FileAlt, SearchAction.Reveal);
+        if (mods.HasFlag(ModifierKeys.Control) && mods.HasFlag(ModifierKeys.Shift)) return Parse(app ? c.AppCtrlShift : c.FileCtrlShift, SearchAction.RunAsAdmin);
+        if (mods.HasFlag(ModifierKeys.Control)) return Parse(app ? c.AppCtrl : c.FileCtrl, app ? SearchAction.NewWindow : SearchAction.OpenWith);
         if (mods.HasFlag(ModifierKeys.Shift)) return Parse(app ? c.AppShift : c.FileShift, app ? SearchAction.NewWindow : SearchAction.OpenWith);
         return SearchAction.Default;
     }
@@ -51,9 +51,9 @@ internal static class SearchKeys
         SearchAction Act(ModifierKeys m)
         {
             var a = Resolve(target, m, c);
-            if (target != KeyTarget.App) return a;
-            if (!hasLocation && a is SearchAction.Reveal or SearchAction.OpenFolder) return SearchAction.Default;
-            if ((!hasLocation || !canRunAsAdmin) && a == SearchAction.RunAsAdmin) return SearchAction.Default;
+            bool app = target == KeyTarget.App;
+            if (app && !hasLocation && a is SearchAction.Reveal or SearchAction.OpenFolder) return SearchAction.Default;
+            if (((app && !hasLocation) || !canRunAsAdmin) && a == SearchAction.RunAsAdmin) return SearchAction.Default;
             return a;
         }
         if (mods != ModifierKeys.None && (mods & (ModifierKeys.Alt | ModifierKeys.Control | ModifierKeys.Shift)) != 0)
@@ -64,6 +64,6 @@ internal static class SearchKeys
         }
         string Part(string key, ModifierKeys m) { var a = Act(m); return a == SearchAction.Default ? "" : $"   {key}: {Label(a, target)}"; }
         return "Enter: " + Label(SearchAction.Default, target) + Part("Ctrl", ModifierKeys.Control) + Part("Shift", ModifierKeys.Shift)
-            + (target == KeyTarget.App ? Part("Ctrl+Shift", ModifierKeys.Control | ModifierKeys.Shift) : "") + Part("Alt", ModifierKeys.Alt);
+            + Part("Ctrl+Shift", ModifierKeys.Control | ModifierKeys.Shift) + Part("Alt", ModifierKeys.Alt);
     }
 }

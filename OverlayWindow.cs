@@ -1626,8 +1626,9 @@ internal sealed class OverlayWindow : Window
         // a Windows setting or tool has no "new window" etc.: Ctrl/Shift/Alt do nothing there, so the hint must not offer them
         if (!file && _results[_sel].Kind != SearchKind.App) { _keyHint.Text = "Enter / click: open"; _keyHint.Visibility = Visibility.Visible; return; }
         var target = file ? KeyTarget.File : KeyTarget.App;
-        string? hintPath = file || _results[_sel].App is not { } hintApp ? null : AppLocation.Resolve(hintApp.AppId);
-        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, file || hintPath != null, file || (hintPath != null && AppLocation.CanRunAsAdmin(hintPath)));
+        string? hintPath = file ? _files[_fileSel].Full : _results[_sel].App is not { } hintApp ? null : AppLocation.Resolve(hintApp.AppId);
+        bool fileIsProgram = file && !_files[_fileSel].IsFolder;
+        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, file || hintPath != null, hintPath != null && AppLocation.CanRunAsAdmin(hintPath) && (!file || fileIsProgram));
         _keyHint.Visibility = Visibility.Visible;
     }
 
@@ -1804,6 +1805,10 @@ internal sealed class OverlayWindow : Window
                         Process.Start(new ProcessStartInfo("rundll32.exe", $"shell32.dll,OpenAs_RunDLL {h.Full}") { UseShellExecute = true });
                     }
                     break;
+                case SearchAction.RunAsAdmin when !h.IsFolder && AppLocation.CanRunAsAdmin(h.Full):
+                    try { Process.Start(AppLocation.AdminStart(h.Full)); }
+                    catch (System.ComponentModel.Win32Exception e1) when (e1.NativeErrorCode == 1223) { Log.Write("run as administrator: the UAC prompt was declined"); }
+                    break;
                 default:
                     Process.Start(new ProcessStartInfo(h.Full) { UseShellExecute = true, WorkingDirectory = h.IsFolder ? h.Full : h.Dir });
                     break;
@@ -1866,7 +1871,7 @@ internal sealed class OverlayWindow : Window
             entries = ResultMenu.ForApp(loc, pinned);
             run = a => RunAppMenu(item, app, loc, a);
         }
-        else if (hit != null) { entries = ResultMenu.ForFile(hit.IsFolder); run = a => RunFileMenu(hit, a); }
+        else if (hit != null) { entries = ResultMenu.ForFile(hit.IsFolder, hit.Full); run = a => RunFileMenu(hit, a); }
         else return;
 
         var m = new ContextMenu();
@@ -1915,6 +1920,7 @@ internal sealed class OverlayWindow : Window
         switch (action)
         {
             case MenuAction.Open: RunFileAction(hit, SearchAction.Default); break;
+            case MenuAction.RunAsAdmin: RunFileAction(hit, SearchAction.RunAsAdmin); break;
             case MenuAction.ShowInExplorer: RunFileAction(hit, SearchAction.Reveal); break;
             case MenuAction.OpenWith: RunFileAction(hit, SearchAction.OpenWith); break;
             case MenuAction.CopyPath: CopyText(hit.Full); break;
