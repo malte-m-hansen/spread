@@ -199,6 +199,7 @@ internal static class SearchTest
 
         if (args.Contains("--live")) _fail += Live(cfg).GetAwaiter().GetResult();
         LocationChecks();
+        MenuChecks();
         Console.WriteLine(_fail == 0 ? "SEARCH TEST PASSED" : $"SEARCH TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
     }
@@ -242,5 +243,19 @@ internal static class SearchTest
         Check("explorer: an existing file is selected, the path quoted (spaces, &)", AppLocation.RevealArguments(@"C:\a b\c&d.txt", p => p == @"C:\a b\c&d.txt") == @"/select,""C:\a b\c&d.txt""");
         Check("explorer: a deleted file opens its folder", AppLocation.RevealArguments(@"C:\a b\c&d.txt", Exists) == @"""C:\a b""");
         Check("explorer: nothing left to show = null", AppLocation.RevealArguments(@"D:\gone\x.txt", Exists) == null);
+    }
+
+    /// <summary>The right-click menu entries per result kind.</summary>
+    static void MenuChecks()
+    {
+        Console.WriteLine("Result menu:");
+        static string H(IReadOnlyList<MenuEntry> m) => string.Join("|", m.Select(e => e.Header));
+        Check("menu: app with a location", H(ResultMenu.ForApp(@"C:\x.exe", false)) == "Open|New window|Open file location|Copy path|Pin to dock", H(ResultMenu.ForApp(@"C:\x.exe", false)));
+        Check("menu: a pinned app offers Unpin", H(ResultMenu.ForApp(@"C:\x.exe", true)) == "Open|New window|Open file location|Copy path|Unpin from dock");
+        Check("menu: an app without a location (Store) has no location entries", H(ResultMenu.ForApp(null, false)) == "Open|New window|Pin to dock", H(ResultMenu.ForApp(null, false)));
+        Check("menu: file", H(ResultMenu.ForFile(false)) == "Open|Show in Explorer|Open with\u2026|Copy path", H(ResultMenu.ForFile(false)));
+        Check("menu: folder has no Open with", H(ResultMenu.ForFile(true)) == "Open|Show in Explorer|Copy path", H(ResultMenu.ForFile(true)));
+        Check("menu: actions match the entries", ResultMenu.ForApp(@"C:\x.exe", true).Select(e => e.Action).SequenceEqual(new[] { MenuAction.Open, MenuAction.NewWindow, MenuAction.OpenLocation, MenuAction.CopyPath, MenuAction.Unpin })
+            && ResultMenu.ForFile(false).Select(e => e.Action).SequenceEqual(new[] { MenuAction.Open, MenuAction.ShowInExplorer, MenuAction.OpenWith, MenuAction.CopyPath }));
     }
 }
