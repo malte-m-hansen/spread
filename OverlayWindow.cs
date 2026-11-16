@@ -235,8 +235,15 @@ internal sealed class OverlayWindow : Window
         ParkWindows();
     }
 
+    /// <summary>
+    /// SC_KEYMENU: what Windows sends when Alt is pressed and released on its own, or with Space or a letter, to open the window menu
+    /// (Restore / Minimize / Close). The overview uses Alt as a modifier (Alt+Enter), so a few Alt presses used to leave that menu open on screen.
+    /// </summary>
+    internal static bool IsKeyMenuCommand(int msg, IntPtr wParam) => msg == 0x0112 /*WM_SYSCOMMAND*/ && (wParam.ToInt64() & 0xFFF0) == 0xF100;
+
     IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (IsKeyMenuCommand(msg, wParam)) { handled = true; return IntPtr.Zero; }
         if (msg == (int)Native.WM_HOTKEY)
         {
             int id = wParam.ToInt32();
@@ -1619,8 +1626,8 @@ internal sealed class OverlayWindow : Window
         // a Windows setting or tool has no "new window" etc.: Ctrl/Shift/Alt do nothing there, so the hint must not offer them
         if (!file && _results[_sel].Kind != SearchKind.App) { _keyHint.Text = "Enter / click: open"; _keyHint.Visibility = Visibility.Visible; return; }
         var target = file ? KeyTarget.File : KeyTarget.App;
-        bool hasLocation = file || _results[_sel].App is not { } hintApp || AppLocation.Resolve(hintApp.AppId) != null;
-        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, hasLocation);
+        string? hintPath = file || _results[_sel].App is not { } hintApp ? null : AppLocation.Resolve(hintApp.AppId);
+        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, file || hintPath != null, file || (hintPath != null && AppLocation.CanRunAsAdmin(hintPath)));
         _keyHint.Visibility = Visibility.Visible;
     }
 
@@ -1812,8 +1819,22 @@ internal sealed class OverlayWindow : Window
     void OpenItem(SearchItem item, ModifierKeys mods)
     {
         var action = item.Kind == SearchKind.App ? SearchKeys.Resolve(KeyTarget.App, mods, _cfg.Search.Keys) : SearchAction.Default;
+        if (item.App != null && action == SearchAction.RunAsAdmin && RunAsAdmin(item)) return;
         if (item.App != null && (action is SearchAction.Reveal or SearchAction.OpenFolder) && RevealApp(item.App)) return;
         OpenItem(item, NewWin(mods));   // no location (Store app): open it as usual
+    }
+
+    /// <summary>Ctrl+Shift+Enter: start the app's program elevated (the UAC prompt), as the Windows taskbar search does. False when it cannot be: Store apps and help files open as usual.</summary>
+    bool RunAsAdmin(SearchItem item)
+    {
+        string? path = item.App == null ? null : AppLocation.Resolve(item.App.AppId);
+        if (path == null || !AppLocation.CanRunAsAdmin(path)) return false;
+        _engine.Usage.Record(item.UsageKey, 1);
+        BeginClose(IntPtr.Zero);
+        try { Process.Start(AppLocation.AdminStart(path)); }
+        catch (System.ComponentModel.Win32Exception e) when (e.NativeErrorCode == 1223) { Log.Write("run as administrator: the UAC prompt was declined"); }
+        catch (Exception e) { Log.Write("run as administrator failed: " + e.GetType().Name); }
+        return true;
     }
 
     /// <summary>Show the program of a start-menu app in Explorer. False when it has no location.</summary>

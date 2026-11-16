@@ -47,6 +47,15 @@ internal static class AppLocation
     /// <summary>For a real file or folder.</summary>
     public static string? RevealArguments(string path) => RevealArguments(path, p => File.Exists(p) || Directory.Exists(p));
 
+    static readonly string[] Elevatable = { ".exe", ".com", ".bat", ".cmd", ".msc", ".lnk" };
+
+    /// <summary>Only programs (and shortcuts to them) have a "run as administrator"; a help file or a web link does not.</summary>
+    internal static bool CanRunAsAdmin(string path) => !string.IsNullOrEmpty(path) && Array.Exists(Elevatable, e => path.EndsWith(e, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Start the program through the shell with the "runas" verb: Windows shows the UAC prompt. Its own folder is the working directory.</summary>
+    internal static System.Diagnostics.ProcessStartInfo AdminStart(string path) =>
+        new(path) { UseShellExecute = true, Verb = "runas", WorkingDirectory = Path.GetDirectoryName(path) ?? "" };
+
     static bool IsDrivePath(string t) => t.Length > 2 && t[1] == ':' && (t[2] == '\\' || t[2] == '/');
 
     static readonly ConcurrentDictionary<string, string?> ShellTargets = new(StringComparer.OrdinalIgnoreCase);

@@ -195,6 +195,17 @@ internal static class SearchTest
             Check("keys: the same action reads 'open file location' for an app and 'show in Explorer' for a file", SearchKeys.Label(SearchAction.Reveal, KeyTarget.App) == "open file location" && SearchKeys.Label(SearchAction.Reveal, KeyTarget.File) == "show in Explorer");
             Check("keys: a saved AppAlt = default is still honoured", SearchKeys.Resolve(KeyTarget.App, Alt, new SearchKeysConfig { AppAlt = "default" }) == SearchAction.Default);
             Check("keys: hint for Alt on an app without a location says it just opens", SearchKeys.Hint(KeyTarget.App, Alt, k, hasLocation: false) == "Alt + Enter / click: open / go to it", SearchKeys.Hint(KeyTarget.App, Alt, k, hasLocation: false));
+            var CtrlShift = System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Shift;
+            Check("keys: Ctrl+Shift on an app = run as administrator; Ctrl and Shift alone are still new window",
+                SearchKeys.Resolve(KeyTarget.App, CtrlShift, k) == SearchAction.RunAsAdmin && SearchKeys.Resolve(KeyTarget.App, System.Windows.Input.ModifierKeys.Control, k) == SearchAction.NewWindow
+                && SearchKeys.Resolve(KeyTarget.App, System.Windows.Input.ModifierKeys.Shift, k) == SearchAction.NewWindow);
+            Check("keys: Ctrl+Shift on a file is unchanged (counts as Ctrl), and Alt still wins over Ctrl+Shift on an app",
+                SearchKeys.Resolve(KeyTarget.File, CtrlShift, k) == SearchAction.Reveal && SearchKeys.Resolve(KeyTarget.App, CtrlShift | Alt, k) == SearchAction.Reveal);
+            Check("keys: the Ctrl+Shift action can be changed in the config", SearchKeys.Resolve(KeyTarget.App, CtrlShift, new SearchKeysConfig { AppCtrlShift = "newWindow" }) == SearchAction.NewWindow);
+            Check("keys: label and hints for run as administrator", SearchKeys.Label(SearchAction.RunAsAdmin, KeyTarget.App) == "run as administrator"
+                && SearchKeys.Hint(KeyTarget.App, CtrlShift, k) == "Ctrl+Shift + Enter / click: run as administrator"
+                && SearchKeys.Hint(KeyTarget.App, System.Windows.Input.ModifierKeys.None, k).Contains("Ctrl+Shift: run as administrator"), SearchKeys.Hint(KeyTarget.App, CtrlShift, k));
+            Check("keys: an app that cannot run elevated (Store app, help file) says it just opens", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false) == "Ctrl+Shift + Enter / click: open / go to it", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false));
             Check("keys: hint for Alt on an app", SearchKeys.Hint(KeyTarget.App, Alt, k) == "Alt + Enter / click: open file location", SearchKeys.Hint(KeyTarget.App, Alt, k));
         }
 
@@ -251,6 +262,10 @@ internal static class SearchTest
         Check("explorer: a stale hit directly under a drive root opens the root, unquoted (a trailing backslash would eat the quote)", AppLocation.RevealArguments(@"C:\x.txt", p => p == @"C:\") == @"C:\");
         Check("explorer: an existing file is selected, the path quoted (spaces, &)", AppLocation.RevealArguments(@"C:\a b\c&d.txt", p => p == @"C:\a b\c&d.txt") == @"/select,""C:\a b\c&d.txt""");
         Check("explorer: a deleted file opens its folder", AppLocation.RevealArguments(@"C:\a b\c&d.txt", Exists) == @"""C:\a b""");
+        var admin = AppLocation.AdminStart(@"C:\Windows\System32\cmd.exe");
+        Check("admin: runs the program through the shell with the runas verb, in its own folder", admin.FileName == @"C:\Windows\System32\cmd.exe" && admin.Verb == "runas" && admin.UseShellExecute && admin.WorkingDirectory == @"C:\Windows\System32");
+        Check("admin: only programs can be elevated, not help files or web links", AppLocation.CanRunAsAdmin(@"C:\x\a.exe") && AppLocation.CanRunAsAdmin(@"C:\x\a.CMD") && AppLocation.CanRunAsAdmin(@"C:\x\a.lnk") && AppLocation.CanRunAsAdmin(@"C:\x\a.msc")
+            && !AppLocation.CanRunAsAdmin(@"C:\x\a.chm") && !AppLocation.CanRunAsAdmin(@"C:\x\a.url") && !AppLocation.CanRunAsAdmin(""));
         Check("explorer: nothing left to show = null", AppLocation.RevealArguments(@"D:\gone\x.txt", Exists) == null);
         if (!live) return;
         // your real start-menu apps (counts only, no names): how many have a program folder

@@ -75,11 +75,12 @@ To start it with Windows, use "Start with Windows" in the tray icon's menu.
 | Flip through a photo stack | Mouse wheel, or Page Up / Page Down |
 | Search | Just start typing; Enter opens the selected result |
 | Search result in a new window / show file in Explorer | Ctrl+Enter (configurable under `Search.Keys`) |
+| Run an app as administrator | Ctrl+Shift+Enter on the app (Windows asks for permission, like the taskbar search). Store apps cannot be elevated and just open |
 | Open the location of a result | Right click it, or Alt+Enter on an app (its program folder) / Ctrl+Enter on a file. Menu key or Shift+F10 opens the menu for the selected result |
 | Leave the overview | Esc (the first Esc clears the search), or click on empty space |
 | Show the real taskbar | Ctrl+Alt+T, or the Taskbar button in the top bar |
 
-Alt+Enter on an app is `Search.Keys.AppAlt`, which defaults to `reveal`. A config.json from an older version may have `"AppAlt": "default"` saved; change it to `"reveal"` to get the new behavior. Store apps and web links have no program folder, so they have no location entries and Alt+Enter just opens them.
+Alt+Enter on an app is `Search.Keys.AppAlt` (default `reveal`) and Ctrl+Shift+Enter is `Search.Keys.AppCtrlShift` (default `runAsAdmin`). A config.json that still has the old default `"AppAlt": "default"` is updated to `reveal` the first time this version starts. Store apps and web links have no program folder, so they have no location entries and Alt and Ctrl+Shift just open them.
 
 Touchpad gestures can be mapped to the overview: set a three-finger swipe in Windows to send Ctrl+Alt+Down / Left / Right (see `GestureSelectHotkey` in the config).
 

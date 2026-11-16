@@ -61,11 +61,13 @@ internal sealed class SearchConfig
     public SearchKeysConfig Keys { get; set; } = new();
 }
 
-/// <summary>Actions: default, newWindow, reveal (show in Explorer; for an app: open its file location), openWith, copyPath, openFolder.</summary>
+/// <summary>Actions: default, newWindow, reveal (show in Explorer; for an app: open its file location), openWith, copyPath, openFolder, runAsAdmin (apps).</summary>
 internal sealed class SearchKeysConfig
 {
     public string AppCtrl { get; set; } = "newWindow";
     public string AppShift { get; set; } = "newWindow";
+    /// <summary>Ctrl+Shift+Enter on an app: run it as administrator (the UAC prompt), like the Windows taskbar search.</summary>
+    public string AppCtrlShift { get; set; } = "runAsAdmin";
     public string AppAlt { get; set; } = "reveal";
     public string FileCtrl { get; set; } = "reveal";
     public string FileShift { get; set; } = "openWith";
@@ -331,9 +333,16 @@ internal sealed class Config
                     loaded.Version = 15;   // v15: dock
                     Persist(loaded);
                 }
+                if (loaded.Version < 16)
+                {
+                    // v16: Alt+Enter on an app opens its file location. A saved "default" is the previous default, not a choice.
+                    if (string.Equals(loaded.Search.Keys.AppAlt, "default", StringComparison.OrdinalIgnoreCase)) loaded.Search.Keys.AppAlt = "reveal";
+                    loaded.Version = 16;
+                    Persist(loaded);
+                }
                 return loaded;
             }
-            var c = new Config { Version = 15, TrayStrip = false, _path = path };
+            var c = new Config { Version = 16, TrayStrip = false, _path = path };
             WriteFile(c, path);
             return c;
         }
