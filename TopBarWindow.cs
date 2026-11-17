@@ -39,6 +39,8 @@ internal sealed class TopBarWindow : Window
     FrameworkElement? _centrePill;
     readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(5) };
     readonly DispatcherTimer _debounce = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    readonly DispatcherTimer _settle = new();
+    int _settleAttempt;
     readonly Dictionary<string, string> _names = new(StringComparer.OrdinalIgnoreCase);
     readonly uint _selfPid = (uint)Environment.ProcessId;
     IntPtr _hwnd;
@@ -46,6 +48,7 @@ internal sealed class TopBarWindow : Window
     bool _registered;
     RECT _mon;
     int _heightPx;
+    uint _dpi = 96;
 
     /// <summary>Raised (debounced) when the usable screen area changed, e.g. after the bar or taskbar moved.</summary>
     public event Action? WorkAreaChanged;
@@ -62,6 +65,7 @@ internal sealed class TopBarWindow : Window
         Content = BuildUi();
         _timer.Tick += (_, _) => { UpdateClock(); UpdateBattery(); };
         _debounce.Tick += (_, _) => { _debounce.Stop(); WorkAreaChanged?.Invoke(); };
+        _settle.Tick += (_, _) => OnSettle();
     }
 
     // ---------- UI ----------
@@ -490,9 +494,15 @@ internal sealed class TopBarWindow : Window
 
         Show();
         RegisterAppBar();
+        ScheduleSettle(reset: true);
     }
 
-    void RegisterAppBar()
+    /// <summary>
+    /// The primary monitor's rectangle, work area and scale, read right now. Every registration starts here: a dock, an undock or a scale
+    /// change makes the numbers of the previous registration wrong (the laptop's 150% height kept on a 125% monitor left a strip of wallpaper
+    /// above maximized windows until Spread was restarted).
+    /// </summary>
+    MONITORINFO MeasurePrimary()
     {
         var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
         var hmon = Native.MonitorFromPoint(new POINT { X = 0, Y = 0 }, 1 /*primary*/);
@@ -500,8 +510,13 @@ internal sealed class TopBarWindow : Window
         _mon = mi.rcMonitor;
         uint dpi = 96;
         try { if (Native.GetDpiForMonitor(hmon, 0, out uint dx, out _) == 0) dpi = dx; } catch { }
-        _heightPx = (int)Math.Round(_cfg.TopBarHeight * dpi / 96.0);
+        _dpi = dpi;
+        _heightPx = AppBarMath.HeightPx(_cfg.TopBarHeight, dpi);
+        return mi;
+    }
 
+    void RegisterAppBar()
+    {
         if (!_registered)
         {
             var abd = new Native.APPBARDATA { cbSize = (uint)Marshal.SizeOf<Native.APPBARDATA>(), hWnd = _hwnd, uCallbackMessage = _callbackMsg };
@@ -513,6 +528,7 @@ internal sealed class TopBarWindow : Window
 
     void SetPosition()
     {
+        MeasurePrimary();   // the monitor may have changed since the last registration (ABN_POSCHANGED also arrives after a dock)
         var abd = new Native.APPBARDATA { cbSize = (uint)Marshal.SizeOf<Native.APPBARDATA>(), hWnd = _hwnd, uEdge = Native.ABE_TOP };
         abd.rc = new RECT { Left = _mon.Left, Top = _mon.Top, Right = _mon.Right, Bottom = _mon.Top + _heightPx };
         Native.SHAppBarMessage(Native.ABM_QUERYPOS, ref abd);
@@ -520,6 +536,36 @@ internal sealed class TopBarWindow : Window
         Native.SHAppBarMessage(Native.ABM_SETPOS, ref abd);
         Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, abd.rc.Left, abd.rc.Top, abd.rc.Width, abd.rc.Height, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
         _debounce.Stop(); _debounce.Start();
+    }
+
+    /// <summary>Look again at the reservation in a moment (see <see cref="AppBarMath.SettleDelayMs"/>); a display or scale change restarts the count.</summary>
+    void ScheduleSettle(bool reset)
+    {
+        if (reset) _settleAttempt = 0;
+        int ms = AppBarMath.SettleDelayMs(_settleAttempt);
+        _settle.Stop();
+        if (ms < 0) return;
+        _settle.Interval = TimeSpan.FromMilliseconds(ms);
+        _settle.Start();
+    }
+
+    /// <summary>Register again with fresh numbers, then check that what Windows reserves is exactly the bar; if not, try again a few times.</summary>
+    void OnSettle()
+    {
+        _settle.Stop();
+        if (!_registered) return;
+        SetPosition();
+        var mi = MeasurePrimary();
+        int gap = AppBarMath.ReservedGap(mi.rcMonitor, mi.rcWork, _heightPx);
+        if (gap == 0)
+        {
+            if (_settleAttempt > 0) Log.Write($"top bar: reserved space now matches the bar ({_heightPx} px at {_dpi} dpi)");
+            else Log.Debug($"top bar: {mi.rcMonitor.Width}x{mi.rcMonitor.Height} at {_dpi} dpi, bar {_heightPx} px, reserved space matches");
+            return;
+        }
+        Log.Write($"top bar: Windows reserves {_heightPx + gap} px but the bar is {_heightPx} px ({mi.rcMonitor.Width}x{mi.rcMonitor.Height} at {_dpi} dpi); registering again ({_settleAttempt + 1}/3)");
+        _settleAttempt++;
+        ScheduleSettle(reset: false);
     }
 
     IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -544,7 +590,10 @@ internal sealed class TopBarWindow : Window
             if (_cfg.TaskbarManaged) TaskbarControl.ReapplyIfNeeded();
         }
         else if (msg == 0x007E /*WM_DISPLAYCHANGE*/ || msg == 0x02E0 /*WM_DPICHANGED*/)
+        {
             Dispatcher.BeginInvoke(new Action(RegisterAppBar), DispatcherPriority.Background);
+            Dispatcher.BeginInvoke(new Action(() => ScheduleSettle(reset: true)), DispatcherPriority.Background);   // Windows applies a dock in steps: look again afterwards
+        }
         else if (msg == 0x001A /*WM_SETTINGCHANGE*/ && wParam.ToInt32() == 0x2F /*SPI_SETWORKAREA*/)
         { _debounce.Stop(); _debounce.Start(); }
         return IntPtr.Zero;
@@ -557,7 +606,7 @@ internal sealed class TopBarWindow : Window
         {
             _revealTimer.Stop(); Native.UnregisterHotKey(_hwnd, 0x5351); _widgetTimer.Stop();
             foreach (var w in _left.Concat(_right).Concat(_inPill)) { try { w.Stop(); } catch { } }
-            _timer.Stop(); _trayTimer.Stop(); _events.Foreground -= OnForeground;
+            _timer.Stop(); _trayTimer.Stop(); _settle.Stop(); _events.Foreground -= OnForeground;
             if (_registered)
             {
                 var abd = new Native.APPBARDATA { cbSize = (uint)Marshal.SizeOf<Native.APPBARDATA>(), hWnd = _hwnd };

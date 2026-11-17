@@ -22,6 +22,7 @@ internal static class CoreTest
         RestartChecks();
         WallpaperChecks();
         VersionChecks();
+        AppBarChecks();
         AltMenuChecks();
         Console.WriteLine(_fail == 0 ? "CORE TEST PASSED" : $"CORE TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
@@ -36,6 +37,18 @@ internal static class CoreTest
         Check("other window commands (minimize, close, move) and other messages are left alone",
             !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF020) && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF060)
             && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF010) && !OverlayWindow.IsKeyMenuCommand(WM_KEYDOWN, (IntPtr)0xF100));
+    }
+
+    static void AppBarChecks()
+    {
+        Console.WriteLine("Top bar (AppBar) after a display change:");
+        Check("bar height follows the monitor scale (32 DIP)", AppBarMath.HeightPx(32, 96) == 32 && AppBarMath.HeightPx(32, 120) == 40 && AppBarMath.HeightPx(32, 144) == 48 && AppBarMath.HeightPx(32, 192) == 64);
+        var mon = new RECT { Left = 0, Top = 0, Right = 5120, Bottom = 2160 };
+        RECT Work(int top) => new() { Left = 0, Top = top, Right = 5120, Bottom = 2160 };
+        Check("a reservation taller than the bar is a gap (the laptop's 48 px left behind on a 125% monitor = 8 px of wallpaper)", AppBarMath.ReservedGap(mon, Work(48), 40) == 8);
+        Check("a matching reservation has no gap; a missing one is negative", AppBarMath.ReservedGap(mon, Work(40), 40) == 0 && AppBarMath.ReservedGap(mon, Work(0), 40) == -40);
+        Check("the gap is measured from the monitor's own top (a monitor not at 0,0)", AppBarMath.ReservedGap(new RECT { Left = -2880, Top = -300, Right = 0, Bottom = 1500 }, new RECT { Left = -2880, Top = -252, Right = 0, Bottom = 1500 }, 48) == 0);
+        Check("checking again is bounded: 400 ms, 1 s, 2.5 s, then give up", AppBarMath.SettleDelayMs(0) == 400 && AppBarMath.SettleDelayMs(1) == 1000 && AppBarMath.SettleDelayMs(2) == 2500 && AppBarMath.SettleDelayMs(3) < 0 && AppBarMath.SettleDelayMs(99) < 0);
     }
 
     static void VersionChecks()
