@@ -22,6 +22,7 @@ internal static class CoreTest
         HotkeyChecks();
         FullscreenChecks();
         ConfigChecks();
+        ConfigMergeChecks();
         RestartChecks();
         WallpaperChecks();
         TickRecoveryChecks();
@@ -33,6 +34,51 @@ internal static class CoreTest
         AltMenuChecks();
         Console.WriteLine(_fail == 0 ? "CORE TEST PASSED" : $"CORE TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
+    }
+
+    static void ConfigMergeChecks()
+    {
+        Console.WriteLine("Config merge, nulls, autostart:");
+        string dir = Path.Combine(Path.GetTempPath(), "spread-core-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string file = Path.Combine(dir, "config.json");
+        string oldLog = Log.FilePath;
+        try
+        {
+            Log.FilePath = Path.Combine(dir, "spread.log"); Log.ResetSize();
+
+            File.WriteAllText(file, "{ \"Version\": 17, \"HotEdge\": \"left\", \"FutureThing\": { \"A\": 1 }, \"Dock\": { \"IconSize\": 40, \"NewDockKey\": true } }");
+            var c = Config.LoadFrom(file);
+            c.Layout = "gnome"; c.Save();
+            string saved = File.ReadAllText(file);
+            Check("save keeps keys this build does not know (top level and nested)", saved.Contains("FutureThing") && saved.Contains("NewDockKey") && saved.Contains("\"A\": 1"), saved);
+            Check("save still writes the change next to them", Config.LoadFrom(file) is { LoadFailed: false, Layout: "gnome", HotEdge: "left" });
+
+            File.WriteAllText(file, "{ \"Version\": 17, \"HotEdge\": \"left\" }");
+            c = Config.LoadFrom(file);
+            File.WriteAllText(file, "{ \"Version\": 17, \"HotEdge\": \"right\", \"Dock\": { \"IconSize\": 55 } }");   // hand edit while Spread runs
+            c.Dock.Enabled = !c.Dock.Enabled; bool dockNow = c.Dock.Enabled; c.Save();
+            var back = Config.LoadFrom(file);
+            Check("a hand edit made after load survives a Save of another key", back.HotEdge == "right" && back.Dock.IconSize == 55, back.HotEdge + "/" + back.Dock.IconSize);
+            Check("the value the app changed is written", back.Dock.Enabled == dockNow);
+            c.Dock.Enabled = !dockNow; c.Save();
+            Check("a second Save keeps merging (snapshot refreshed after a save)", Config.LoadFrom(file) is { HotEdge: "right" } b2 && b2.Dock.Enabled == !dockNow);
+
+            File.WriteAllText(file, "{ \"Version\": 17, \"Search\": null, \"HideTaskbar\": null }");
+            c = Config.LoadFrom(file);
+            Check("a null settings section gets its defaults", !c.LoadFailed && c.Search != null && c.Search.Keys != null && c.HideTaskbar == new Config().HideTaskbar, $"failed={c.LoadFailed}");
+            File.WriteAllText(file, "{ \"Version\": 15, \"Search\": { \"Keys\": null } }");
+            c = Config.LoadFrom(file);
+            Check("a null nested section gets its defaults (and migrations still run)", !c.LoadFailed && c.Search.Keys != null && c.Version == 17, $"failed={c.LoadFailed}");
+
+            Check("autostart: a value pointing elsewhere is refreshed", Program.ShouldRefreshAutostart("old command", "new command"));
+            Check("autostart: the same value, or autostart off, is left alone", !Program.ShouldRefreshAutostart("same", "same") && !Program.ShouldRefreshAutostart(null, "new command"));
+        }
+        finally
+        {
+            Log.FilePath = oldLog; Log.ResetSize();
+            try { Directory.Delete(dir, true); } catch { }
+        }
     }
 
     static void AltMenuChecks()
