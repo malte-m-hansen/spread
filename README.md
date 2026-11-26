@@ -63,7 +63,7 @@ dotnet bin\out\Spread.dll
 
 Spread has no .exe of its own; it always runs as `dotnet Spread.dll`. Only one instance runs at a time. A running Spread locks its `Spread.dll`, so build into a new output folder (or quit Spread first) when you want to try a change.
 
-To start it with Windows, use "Start with Windows" in the tray icon's menu.
+To start it with Windows, use "Start with Windows" in the tray icon's menu. It always starts the build Spread last started from, so switching to a new build folder needs no extra step.
 
 ## Using it
 
@@ -169,7 +169,7 @@ If Spread is ended in a way that leaves the Windows taskbar hidden, start it aga
 dotnet bin\out\Spread.dll --restore-taskbar
 ```
 
-The tray menu also has "Restore Windows taskbar".
+The tray menu also has "Restore Windows taskbar". After using it, Spread leaves the taskbar visible until Spread is started again.
 
 ## License
 
