@@ -11,6 +11,16 @@ namespace Spread;
 /// "hidden": auto-hide (so it reserves no space) plus keeping the taskbar window itself hidden, so touching the edge does nothing.
 /// Marker files record that *we* changed it, so a crash can be repaired at the next start; "--restore-taskbar" and the tray menu entry always work.
 /// </summary>
+/// <summary>What Hide/SetRevealed need to remember: the window mode of the start-up Hide, and whether a forced Restore blocks further hides.</summary>
+internal sealed class TaskbarMode
+{
+    public bool HideWindow { get; private set; }
+    public bool HideAllowed { get; private set; } = true;
+    public void Remember(bool hideWindow) => HideWindow = hideWindow;
+    /// <summary>After a forced Restore the taskbar stays as it is until Spread starts again.</summary>
+    public void Latch() => HideAllowed = false;
+}
+
 internal static class TaskbarControl
 {
     static string Marker => Path.Combine(Config.Dir, "taskbar-hidden.flag");
@@ -73,8 +83,10 @@ internal static class TaskbarControl
     /// <param name="quiet">Putting the taskbar away again after a reveal: only a verbose log line.</param>
     public static void Hide(bool hideWindow = false, bool quiet = false)
     {
+        if (!_mode.HideAllowed) { Log.Debug("taskbar hide ignored: restored by the user"); return; }
         try
         {
+            _mode.Remember(hideWindow);
             uint s = GetState();
             if ((s & Native.ABS_AUTOHIDE) != 0 && !IsHiddenBySpread) Log.Write("taskbar was already auto-hide: leaving that part alone");
             else
@@ -106,6 +118,7 @@ internal static class TaskbarControl
         force || (markerExists && (original is not uint o || (o & Native.ABS_AUTOHIDE) == 0));
 
     static bool _revealed;
+    static readonly TaskbarMode _mode = new();
     public static bool Revealed => _revealed;
 
     /// <summary>Temporarily bring the real taskbar back on screen (full, not auto-hide), or put it away again.</summary>
@@ -113,7 +126,7 @@ internal static class TaskbarControl
     {
         try
         {
-            if (on == _revealed) return;
+            if (on == _revealed || !_mode.HideAllowed) return;
             _revealed = on;
             if (on)
             {
@@ -128,7 +141,7 @@ internal static class TaskbarControl
             }
             else
             {
-                Hide(true, quiet: true);
+                Hide(_mode.HideWindow, quiet: true);   // back to the mode chosen at start-up (autohide keeps the window usable)
                 Log.Debug("taskbar put away again");
             }
         }
@@ -146,6 +159,7 @@ internal static class TaskbarControl
     {
         try
         {
+            if (force) { _mode.Latch(); _revealed = false; }   // "keep it visible until Spread starts again"
             if (!IsHiddenBySpread && !force) return false;
             _keepWindowHidden = false;
             uint s = GetState();

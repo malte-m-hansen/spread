@@ -18,6 +18,9 @@ internal static class CoreTest
     public static int Run()
     {
         TaskbarChecks();
+        TaskbarModeChecks();
+        HotkeyChecks();
+        FullscreenChecks();
         ConfigChecks();
         RestartChecks();
         WallpaperChecks();
@@ -68,6 +71,39 @@ internal static class CoreTest
         Check("version strips the commit suffix", AppInfo.Parse("0.1.0+abc123") == "0.1.0" && AppInfo.Parse("1.2.3-beta.1+x") == "1.2.3-beta.1");
         Check("version falls back to dev", AppInfo.Parse(null) == "dev" && AppInfo.Parse("  ") == "dev" && AppInfo.Parse("+abc") == "dev");
         Check("this build has a real version", AppInfo.Version != "dev" && char.IsDigit(AppInfo.Version[0]), AppInfo.Version);
+    }
+
+    static void TaskbarModeChecks()
+    {
+        Console.WriteLine("Taskbar mode memory and restore latch:");
+        var m = new TaskbarMode();
+        Check("hides are allowed before any restore", m.HideAllowed);
+        m.Remember(false);   // autohide start-up
+        Check("autohide start-up: a later re-hide keeps the window visible (hideWindow false)", !m.HideWindow);
+        m.Remember(true);
+        Check("hidden start-up: a later re-hide hides the window again", m.HideWindow);
+        m.Latch();
+        Check("after a forced restore no hide is allowed", !m.HideAllowed);
+    }
+
+    static void HotkeyChecks()
+    {
+        Console.WriteLine("Hotkey parsing:");
+        bool Is(string s, uint mods, uint vk) => HotkeyParser.TryParse(s, out uint m, out uint v) && m == mods && v == vk;
+        Check("Ctrl+Alt+Space", Is("Ctrl+Alt+Space", 3, 0x20));
+        Check("Ctrl+Alt+1 is the digit 1, not Cancel", Is("Ctrl+Alt+1", 3, 0x31));
+        Check("Ctrl+Shift+9", Is("Ctrl+Shift+9", 6, 0x39));
+        Check("Ctrl+Alt+12 is rejected", !HotkeyParser.TryParse("Ctrl+Alt+12", out _, out _));
+        Check("F5", Is("F5", 0, 0x74));
+        Check("Ctrl+Oem3 still works", HotkeyParser.TryParse("Ctrl+Oem3", out _, out uint v3) && v3 == 0xC0);
+        Check("garbage is rejected", !HotkeyParser.TryParse("Ctrl+Banana", out _, out _) && !HotkeyParser.TryParse("", out _, out _) && !HotkeyParser.TryParse("Ctrl+", out _, out _));
+    }
+
+    static void FullscreenChecks()
+    {
+        Console.WriteLine("Top bar z-order:");
+        Check("no fullscreen app: the bar is topmost", TopBarWindow.ZOrderFor(false) == Native.HWND_TOPMOST);
+        Check("fullscreen app open: the bar stays behind", TopBarWindow.ZOrderFor(true) != Native.HWND_TOPMOST && TopBarWindow.ZOrderFor(true) == (IntPtr)1);
     }
 
     static void TaskbarChecks()
