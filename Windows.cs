@@ -93,6 +93,10 @@ internal static class WindowEnumerator
             var wp = new WINDOWPLACEMENT { length = System.Runtime.InteropServices.Marshal.SizeOf<WINDOWPLACEMENT>() };
             if (!Native.GetWindowPlacement(h, ref wp)) return null;
             bounds = wp.rcNormalPosition;
+            var hm = Native.MonitorFromRect(ref bounds, 2 /*MONITOR_DEFAULTTONEAREST*/);
+            var mi = new MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+            if (hm != IntPtr.Zero && Native.GetMonitorInfo(hm, ref mi))
+                bounds = PlacementToScreen(bounds, mi.rcMonitor, mi.rcWork, (ex & Native.WS_EX_TOOLWINDOW) != 0);
         }
         else if (!Native.GetWindowRect(h, out bounds)) return null;
         if (bounds.Width < 60 || bounds.Height < 40) return null;
@@ -115,6 +119,18 @@ internal static class WindowEnumerator
             ExePath = path, Minimized = minimized, Bounds = frame, Icon = LoadIcon(path),
             CropL = cl, CropT = ct, CropR = cr, CropB = cb, WinW = bounds.Width, WinH = bounds.Height
         };
+    }
+
+    /// <summary>
+    /// A minimized window's WINDOWPLACEMENT.rcNormalPosition is in workspace coordinates: relative to the top-left of its monitor's
+    /// work area (not the monitor), unless it is a tool window. Spread's own top bar and the taskbar shift the work area, so the
+    /// rect must be moved by that offset to get screen coordinates.
+    /// </summary>
+    internal static RECT PlacementToScreen(RECT normal, RECT monitor, RECT work, bool toolWindow)
+    {
+        if (toolWindow) return normal;
+        int dx = work.Left - monitor.Left, dy = work.Top - monitor.Top;
+        return new RECT { Left = normal.Left + dx, Top = normal.Top + dy, Right = normal.Right + dx, Bottom = normal.Bottom + dy };
     }
 
     static string? GetExePath(uint pid)

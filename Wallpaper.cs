@@ -64,7 +64,7 @@ internal static class Wallpaper
             if (path.Length > 0 && File.Exists(path))
             {
                 var stamp = File.GetLastWriteTimeUtc(path);
-                string key = $"{path}|{mon.Width}x{mon.Height}|{info.Position}";
+                string key = CacheKey(path, monitorId, mon, info.Position);
                 if (Images.TryGetValue(key, out var cached) && cached.stamp == stamp) info.Image = cached.img;
                 else if (Loading.TryAdd(key, 1)) Task.Run(() => Load(key, path, stamp, mon, info.Position));
             }
@@ -73,6 +73,10 @@ internal static class Wallpaper
         finally { if (wp != null) Marshal.ReleaseComObject(wp); }
         return info;
     }
+
+    /// <summary>"path|monitor|WxH|position". The monitor is part of the key: two same-size monitors with different pictures must not evict each other.</summary>
+    internal static string CacheKey(string path, string? monitorId, RECT mon, int position) =>
+        $"{path}|{monitorId ?? $"{mon.Left},{mon.Top},{mon.Right},{mon.Bottom}"}|{mon.Width}x{mon.Height}|{position}";
 
     static string? FindMonitor(IDesktopWallpaper wp, RECT mon)
     {
@@ -139,14 +143,14 @@ internal static class Wallpaper
     const int MaxCached = 3;
 
     /// <summary>
-    /// Each cached copy is a full-screen bitmap (25-65 MB). An older wallpaper for the same monitor geometry is never needed again
-    /// (slideshow, Spotlight, a new picture), so it goes; beyond <see cref="MaxCached"/> geometries (docking stations, projectors)
+    /// Each cached copy is a full-screen bitmap (25-65 MB). An older wallpaper for the same monitor (and geometry) is never needed again
+    /// (slideshow, Spotlight, a new picture), so it goes; beyond <see cref="MaxCached"/> entries (docking stations, projectors)
     /// the others go too. Without this the cache only ever grew.
     /// </summary>
     internal static void Evict<T>(ConcurrentDictionary<string, T> images, string keep, int max)
     {
         int bar = keep.IndexOf('|');
-        string geometry = bar >= 0 ? keep[bar..] : "\0";   // "|WxH|position"
+        string geometry = bar >= 0 ? keep[bar..] : "\0";   // "|monitor|WxH|position"
         foreach (var k in images.Keys)
             if (k != keep && k.EndsWith(geometry, StringComparison.Ordinal)) images.TryRemove(k, out _);
         foreach (var k in images.Keys)

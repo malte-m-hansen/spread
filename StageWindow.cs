@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -14,9 +15,47 @@ namespace Spread;
 /// DWM draws thumbnails above everything in their destination window, so all UI (icons, titles, close
 /// buttons, search) lives in the transparent HUD window that sits on top of this one.
 /// </summary>
+/// <summary>
+/// Under per-monitor DPI, moving a window onto a monitor with another scale makes Windows send WM_DPICHANGED, and WPF then resizes it to
+/// the "suggested" rect (scaled by newDpi/oldDpi). Spread works in physical pixels and wants exactly the rect it asked for, so it remembers it
+/// here, overwrites the suggestion with it, and checks after each move that the window really got it.
+/// </summary>
+internal sealed class WantedRect
+{
+    public const int WM_DPICHANGED = 0x02E0;
+    RECT? _wanted;
+
+    internal static bool SameRect(RECT a, RECT b) => a.Left == b.Left && a.Top == b.Top && a.Right == b.Right && a.Bottom == b.Bottom;
+    /// <summary>Rewrite the DPI suggestion only when Spread has asked for a rect.</summary>
+    internal static bool ShouldRewrite(RECT? wanted) => wanted.HasValue;
+    /// <summary>Re-apply once when the window did not end up where it was asked to be.</summary>
+    internal static bool NeedsReapply(RECT? wanted, RECT actual) => wanted.HasValue && !SameRect(wanted.Value, actual);
+
+    /// <summary>Moves the window, remembering the rect first (the DPI message arrives inside SetWindowPos), and fixes it once if it landed elsewhere.</summary>
+    public void Move(IntPtr hwnd, IntPtr after, RECT r, uint flags)
+    {
+        _wanted = r;
+        Native.SetWindowPos(hwnd, after, r.Left, r.Top, r.Width, r.Height, flags);
+        if (Native.GetWindowRect(hwnd, out var actual) && NeedsReapply(_wanted, actual))
+        {
+            Log.Debug($"window landed at {actual.Left},{actual.Top} {actual.Width}x{actual.Height} instead of {r.Left},{r.Top} {r.Width}x{r.Height}: moved again");
+            Native.SetWindowPos(hwnd, after, r.Left, r.Top, r.Width, r.Height, flags | Native.SWP_NOACTIVATE);
+        }
+    }
+
+    /// <summary>HwndSource hook: on WM_DPICHANGED replace the suggested rect (lParam) with the wanted one. Not marked handled: WPF still updates its DPI.</summary>
+    public IntPtr Hook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WM_DPICHANGED && lParam != IntPtr.Zero && ShouldRewrite(_wanted))
+            Marshal.StructureToPtr(_wanted!.Value, lParam, false);
+        return IntPtr.Zero;
+    }
+}
+
 internal sealed class StageWindow : Window
 {
     public IntPtr Hwnd { get; private set; }
+    readonly WantedRect _want = new();
 
     readonly Canvas _host = new() { Opacity = 0, ClipToBounds = true };
     readonly Rectangle _solid = new();
@@ -47,7 +86,9 @@ internal sealed class StageWindow : Window
     public void Init()
     {
         Hwnd = new WindowInteropHelper(this).EnsureHandle();
-        HwndSource.FromHwnd(Hwnd).CompositionTarget.BackgroundColor = Colors.Transparent;
+        var src = HwndSource.FromHwnd(Hwnd);
+        src.CompositionTarget.BackgroundColor = Colors.Transparent;
+        src.AddHook(_want.Hook);
         long ex = Native.GetWindowLongPtr(Hwnd, Native.GWL_EXSTYLE).ToInt64();
         Native.SetWindowLongPtr(Hwnd, Native.GWL_EXSTYLE, new IntPtr(ex | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE));
         Show();   // stays shown for good; the overlay parks it off-screen so its surfaces are never reallocated
@@ -55,7 +96,7 @@ internal sealed class StageWindow : Window
 
     public void ShowAt(RECT view)
     {
-        Native.SetWindowPos(Hwnd, Native.HWND_TOPMOST, view.Left, view.Top, view.Width, view.Height, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+        _want.Move(Hwnd, Native.HWND_TOPMOST, view, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
     }
 
     public void Park(RECT parked) => ShowAt(parked);
