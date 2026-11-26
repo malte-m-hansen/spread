@@ -128,15 +128,20 @@ internal static class DockBuilder
     public static int ExeStrength(AppKeys k, string raw, string key)
     {
         int best = 0;
+        bool mangled = Mangled(raw, key);   // notepad++ -> notepad: such a program only ever matches by its exact name
         for (int i = 0; i < k.Hints.Count; i++)
         {
             string h = k.Hints[i];
+            if (mangled) { if (i == 0 && k.RawExe == raw && h == key) best = 4; continue; }
             int s = h == key ? (i == 0 && k.RawExe != null ? (k.RawExe == raw ? 4 : 1) : 3) : key.Length >= 6 && h.EndsWith(key, StringComparison.Ordinal) ? 2 : 0;
             if (s > best) best = s;
         }
-        if (k.IdWord != null && k.IdWord == key) best = Math.Max(best, k.IdWord == raw ? 4 : 3);
+        if (k.IdWord != null && k.IdWord == key) best = Math.Max(best, k.IdWord == raw ? 4 : mangled ? 0 : 3);
         return best;
     }
+
+    /// <summary>The file name lost real characters like '+' in Norm (separators such as '-' and '_' do not count: ms-teams ~ MSTeams stays a fair match).</summary>
+    static bool Mangled(string raw, string key) => raw != key && raw.Any(ch => !char.IsLetterOrDigit(ch) && ch is not ('-' or '_' or ' ' or '.'));
 
     /// <summary>Can a program whose (normalized) exe name is `key` be this app?</summary>
     public static bool HintMatches(AppKeys k, string key)
@@ -187,7 +192,7 @@ internal static class DockBuilder
         {
             return ExeStrength(a, exePath, w, key) > 0;
         }
-        return a != null && KeysOf(a).Hints.Count == 0 && UsageStore.KeyMatchesApp(a, key);
+        return a != null && KeysOf(a).Hints.Count == 0 && !Mangled(RawExe(w), key) && UsageStore.KeyMatchesApp(a, key);
     }
 
     /// <summary>The first kind of match (0..2) by which the window belongs to the app, -1 for none.</summary>
@@ -232,6 +237,7 @@ internal static class DockBuilder
             string p = Norm(w.ProcName);
             if (p.Length < 3 || !(n == p || n.StartsWith(p, StringComparison.Ordinal) || p.StartsWith(n, StringComparison.Ordinal))) continue;
             string key = ExeKey(w);
+            if (Mangled(RawExe(w), key)) continue;   // notepad++.exe is not matched by the name "Notepad"
             if (!apps.Any(a => !ReferenceEquals(a, app) && MatchPass(a, w, key) >= 0)) return w.Hwnd;
         }
         return IntPtr.Zero;
