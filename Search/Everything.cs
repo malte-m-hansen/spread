@@ -16,7 +16,18 @@ internal enum EverythingState { Unknown, Ready, NotRunning, Blocked, Error }
 
 internal sealed record EverythingHit(string Name, string Dir, bool IsFolder, long Size, DateTime Modified)
 {
-    public string Full => string.IsNullOrEmpty(Dir) ? Name : Path.Combine(Dir, Name);
+    /// <summary>The full path. A bare drive (Everything may report the folder of a drive-root item as "C:") needs its backslash: Path.Combine gives the drive-relative "C:x.txt".</summary>
+    public string Full => string.IsNullOrEmpty(Dir) ? (IsBareDrive(Name) ? Name + "\\" : Name) : IsBareDrive(Dir) ? Dir + "\\" + Name : Path.Combine(Dir, Name);
+    static bool IsBareDrive(string s) => s.Length == 2 && s[1] == ':' && char.IsAsciiLetter(s[0]);
+}
+
+/// <summary>Numbers the file queries: a keystroke makes every reply still in flight obsolete, so only the answer for the text in the box is shown.</summary>
+internal sealed class QueryStamp
+{
+    int _id;
+    public int Current => Volatile.Read(ref _id);
+    public int Next() => Interlocked.Increment(ref _id);
+    public bool IsCurrent(int id) => id == Current;
 }
 
 internal sealed record EverythingResult(EverythingState State, int Total, List<EverythingHit> Hits, long Ms);

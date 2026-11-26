@@ -101,6 +101,41 @@ internal static class DockTest
         Check("dock: an entry's windows are front to back whichever kind of match found them", edgePin.Count == 1 && edgePin[0].Windows.SequenceEqual(new[] { new IntPtr(50), new IntPtr(51) }) && edgePin[0].Titles.SequenceEqual(new[] { "front", "back" }),
             string.Join(",", edgePin.SelectMany(x => x.Windows)));
 
+        // Notepad vs Notepad++: "notepad++.exe" normalises to "notepad", but only the exact program name is a strong match
+        {
+            var npStore = App("Notepad", "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App");
+            var npPlus = App("Notepad++", @"C:\Program Files\Notepad++\notepad++.exe");
+            var npAll = new List<AppEntry> { npStore, npPlus };
+            var npAllRev = new List<AppEntry> { npPlus, npStore };
+            var plusWin = W(60, @"C:\Program Files\Notepad++\notepad++.exe", null, "a.txt - Notepad++");
+            var storeWin = W(61, @"C:\Program Files\WindowsApps\n\Notepad.exe", null, "Untitled - Notepad");
+            Check("notepad++: FindWindow for Notepad with only a Notepad++ window open finds nothing", DockBuilder.FindWindow(npStore, new List<DockWindow> { plusWin }, npAll) == IntPtr.Zero && DockBuilder.FindWindow(npStore, new List<DockWindow> { plusWin }, npAllRev) == IntPtr.Zero);
+            Check("notepad++: FindWindow for Notepad++ finds its window, and Notepad finds notepad.exe (either catalog order)",
+                DockBuilder.FindWindow(npPlus, new List<DockWindow> { plusWin, storeWin }, npAll) == new IntPtr(60) && DockBuilder.FindWindow(npStore, new List<DockWindow> { plusWin, storeWin }, npAll) == new IntPtr(61)
+                && DockBuilder.FindWindow(npPlus, new List<DockWindow> { plusWin, storeWin }, npAllRev) == new IntPtr(60) && DockBuilder.FindWindow(npStore, new List<DockWindow> { plusWin, storeWin }, npAllRev) == new IntPtr(61));
+            foreach (var cat in new[] { npAll, npAllRev })
+            {
+                var d = DockBuilder.Build(new List<string>(), cat, new List<DockWindow> { plusWin, storeWin }, new DockConfig());
+                Check("notepad++: in the dock the notepad++.exe window is Notepad++'s, notepad.exe is Notepad's", d.Count == 2 && d.Single(x => x.App == npPlus).Windows.SequenceEqual(new[] { new IntPtr(60) }) && d.Single(x => x.App == npStore).Windows.SequenceEqual(new[] { new IntPtr(61) }), string.Join(",", d.Select(x => x.Name + x.Windows.Count)));
+            }
+            var pinned = DockBuilder.Build(new List<string> { "id:Microsoft.WindowsNotepad_8wekyb3d8bbwe!App" }, npAll, new List<DockWindow> { plusWin }, new DockConfig());
+            Check("notepad++: a pinned Notepad does not take the Notepad++ window", pinned.Count == 2 && pinned[0].App == npStore && pinned[0].Windows.Count == 0 && pinned[1].App == npPlus && pinned[1].Windows.Count == 1, string.Join(",", pinned.Select(x => x.Name + x.Windows.Count)));
+            Check("notepad++: exe: pins resolve by the exact program name", DockBuilder.ResolvePin(@"exe:C:\Program Files\Notepad++\notepad++.exe", npAllRev) == npPlus && DockBuilder.ResolvePin(@"exe:C:\Windows\notepad.exe", npAllRev) == npStore);
+            var npExe = App("Notepad", @"C:\Windows\notepad.exe");
+            Check("notepad++: an exact exe name beats the normalised one for apps with a path id too", DockBuilder.FindWindow(npExe, new List<DockWindow> { plusWin }, new List<AppEntry> { npPlus, npExe }) == IntPtr.Zero && DockBuilder.FindWindow(npPlus, new List<DockWindow> { plusWin }, new List<AppEntry> { npExe, npPlus }) == new IntPtr(60));
+            // portable Notepad++ (not in the Start menu): only Store Notepad in the catalog must not take its window either
+            var plusOnly = new List<DockWindow> { plusWin };
+            var npPath = App("Notepad", @"C:\Windows\notepad.exe");
+            foreach (var only in new[] { npStore, npPath })
+            {
+                var cat = new List<AppEntry> { only };
+                var d = DockBuilder.Build(new List<string>(), cat, plusOnly, new DockConfig());
+                Check("notepad++ not in the catalog: the notepad++.exe window is not Notepad's (" + only.AppId[..Math.Min(9, only.AppId.Length)] + ")",
+                    DockBuilder.FindWindow(only, plusOnly, cat) == IntPtr.Zero && d.All(x => x.App != only || x.Windows.Count == 0), string.Join(",", d.Select(x => x.Name + x.Windows.Count)));
+                Check("notepad++ not in the catalog: an ordinary notepad.exe window is still Notepad's (" + only.AppId[..Math.Min(9, only.AppId.Length)] + ")", DockBuilder.FindWindow(only, new List<DockWindow> { storeWin }, cat) == new IntPtr(61), DockBuilder.FindWindow(only, new List<DockWindow> { storeWin }, cat).ToString());
+            }
+        }
+
         // clicking: latest window, or the next one when the app is already in front
         var live = new List<IntPtr> { new(10), new(11), new(12) };
         Check("click: latest window when the app is not in front", DockBuilder.NextWindow(live, new IntPtr(99)) == new IntPtr(10));

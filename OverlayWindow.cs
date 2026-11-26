@@ -36,7 +36,7 @@ internal sealed class OverlayWindow : Window
     bool _gestureKeys, _gestureNav;
     readonly HashSet<string> _gestureKeyWarned = new(StringComparer.OrdinalIgnoreCase);
 
-    enum State { Hidden, Opening, Open, Closing }
+    internal enum State { Hidden, Opening, Open, Closing }
 
     const double RaiseDwellMs = 120, RaiseReleaseMs = 700;
     readonly List<StackInfo> _stacks = new();
@@ -131,7 +131,8 @@ internal sealed class OverlayWindow : Window
     readonly TextBlock _keyHint = new() { Foreground = new SolidColorBrush(Color.FromArgb(0x88, 255, 255, 255)), FontSize = 12, FontFamily = new FontFamily("Segoe UI"), Margin = new Thickness(8, 8, 0, 0), IsHitTestVisible = false };
     readonly List<Border> _fileRows = new();
     List<EverythingHit> _files = new();
-    int _fileTotal, _fileSel = -1, _fileQueryId;
+    int _fileTotal, _fileSel = -1;
+    readonly QueryStamp _fileQuery = new();
     bool _hoverArmed;           // while searching, results react to the pointer only after it has really moved
     Point _searchMousePos;
     EverythingState _fileState = EverythingState.Unknown;
@@ -202,6 +203,7 @@ internal sealed class OverlayWindow : Window
         var src = HwndSource.FromHwnd(_hwnd);
         src.CompositionTarget.BackgroundColor = Colors.Transparent;
         src.AddHook(WndProc);
+        src.AddHook(_want.Hook);
         _cache.Attach(_hwnd, () => _state != State.Hidden);
         _snaps.Attach(() => _state != State.Hidden);
         long ex = Native.GetWindowLongPtr(_hwnd, Native.GWL_EXSTYLE).ToInt64();
@@ -355,6 +357,7 @@ internal sealed class OverlayWindow : Window
     double SinceTriggerMs() => (Stopwatch.GetTimestamp() - _trigTs) * 1000.0 / Stopwatch.Frequency;
     void Mark(string name) => _openTrace += $"{name} {SinceTriggerMs():0.0} | ";
 
+    readonly WantedRect _want = new();   // the rect each move asked for (see WantedRect)
     RECT _park;                       // where the windows wait, far off-screen but still "shown"
     IntPtr _prevForeground;           // who had the keyboard before the overview opened
     Native.DWM_TIMING_INFO _dwm0; bool _dwm0ok;
@@ -447,8 +450,7 @@ internal sealed class OverlayWindow : Window
             _stage.ShowAt(view);
             // Mouse-driven opens must not activate the overlay while it animates: WPF's Show() and SWP_SHOWWINDOW both
             // activate by default, and that foreground switch is what stalled the compositor a few frames in.
-            Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, view.Left, view.Top, view.Width, view.Height,
-                Native.SWP_SHOWWINDOW | (keyboard ? 0u : Native.SWP_NOACTIVATE));
+            _want.Move(_hwnd, Native.HWND_TOPMOST, view, Native.SWP_SHOWWINDOW | (keyboard ? 0u : Native.SWP_NOACTIVATE));
             _inputLogBudget = 12; _firstMouseLogged = false;
             InputLog("foreground at open: " + FgName());
             // Take the keyboard right away, for every kind of open: whatever you type the instant the overview appears goes into
@@ -618,6 +620,9 @@ internal sealed class OverlayWindow : Window
         if (top != IntPtr.Zero) Native.ForceForeground(top);
     }
 
+    /// <summary>After a failed animation tick: only a half-open or half-closed overview is stuck (Open still answers keys and Toggle).</summary>
+    internal static bool NeedsHideAfterTickFailure(State s) => s == State.Opening || s == State.Closing;
+
     void FinishHide()
     {
         _snaps.Pause(1500);   // no PrintWindow captures while the desktop is being revealed
@@ -676,7 +681,7 @@ internal sealed class OverlayWindow : Window
     {
         if (SliverPark) _stage.SetBackdrop(0);   // a parked sliver must be fully transparent
         SetNoActivate(true);   // when the foreground window closes, Windows must not hand the keyboard to a parked overlay
-        Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, _park.Left, _park.Top, _park.Width, _park.Height, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+        _want.Move(_hwnd, Native.HWND_TOPMOST, _park, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
         _stage.Park(_park);
     }
 
@@ -1337,7 +1342,24 @@ internal sealed class OverlayWindow : Window
 
     void OnRender(object? sender, EventArgs e)
     {
-        try { Tick(); } catch (Exception ex) { Log.Write("tick: " + ex); StopTicking(); }
+        try { Tick(); }
+        catch (Exception ex)
+        {
+            Log.Write("tick: " + ex); StopTicking();
+            if (NeedsHideAfterTickFailure(_state)) RecoverHide();   // else the topmost opaque overview would stay up and ignore every key
+        }
+    }
+
+    /// <summary>Last resort after a failed tick: hide the overview; if even that throws, force the state and park the windows.</summary>
+    void RecoverHide()
+    {
+        try { FinishHide(); }
+        catch (Exception ex)
+        {
+            Log.Write("hide after failed tick: " + ex);
+            _state = State.Hidden; _p = 0;
+            try { ParkWindows(); } catch (Exception ex2) { Log.Write("park after failed tick: " + ex2.Message); }
+        }
     }
 
     void Tick()
@@ -1617,7 +1639,7 @@ internal sealed class OverlayWindow : Window
     bool NewWin(ModifierKeys m) => SearchKeys.Resolve(KeyTarget.App, m, _cfg.Search.Keys) == SearchAction.NewWindow;
 
     /// <summary>The line under the results: what Enter / click does with the selected result, and with the key that is held right now.</summary>
-    void UpdateKeyHint()
+    void UpdateKeyHint(bool ask = true)
     {
         if (!_cfg.Search.Keys.ShowHint || !SearchMode) { _keyHint.Visibility = Visibility.Collapsed; return; }
         bool file = _fileSel >= 0 && _fileSel < _files.Count;
@@ -1626,7 +1648,17 @@ internal sealed class OverlayWindow : Window
         // a Windows setting or tool has no "new window" etc.: Ctrl/Shift/Alt do nothing there, so the hint must not offer them
         if (!file && _results[_sel].Kind != SearchKind.App) { _keyHint.Text = "Enter / click: open"; _keyHint.Visibility = Visibility.Visible; return; }
         var target = file ? KeyTarget.File : KeyTarget.App;
-        string? hintPath = file ? _files[_fileSel].Full : _results[_sel].App is not { } hintApp ? null : AppLocation.Resolve(hintApp.AppId);
+        string? hintPath = null;
+        if (file) hintPath = _files[_fileSel].Full;
+        else if (_results[_sel].App is { } hintApp && !AppLocation.TryGetCached(hintApp.AppId, out hintPath) && ask)
+        {
+            // the shell does not know this id yet: ask on its own thread (typing must not wait for it) and refresh the hint when the answer is there
+            var asked = _results[_sel];
+            AppLocation.Request(hintApp.AppId, () => Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_state != State.Hidden && _fileSel < 0 && _sel >= 0 && _sel < _results.Count && ReferenceEquals(_results[_sel], asked)) UpdateKeyHint(false);
+            })));
+        }
         bool fileIsProgram = file && !_files[_fileSel].IsFolder;
         _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, file || hintPath != null, hintPath != null && AppLocation.CanRunAsAdmin(hintPath) && (!file || fileIsProgram));
         _keyHint.Visibility = Visibility.Visible;
@@ -1639,7 +1671,7 @@ internal sealed class OverlayWindow : Window
 
     void ClearFiles()
     {
-        _fileTimer.Stop(); _fileQueryId++;
+        _fileTimer.Stop(); _fileQuery.Next();
         _files = new(); _fileTotal = 0; _fileSel = -1; _fileText = "";
         _filesPanel.Children.Clear(); _fileRows.Clear();
         _filesBox.Visibility = Visibility.Collapsed;
@@ -1647,6 +1679,7 @@ internal sealed class OverlayWindow : Window
 
     void StartFileSearch(string q)
     {
+        _fileQuery.Next();   // every keystroke: a reply still in flight for the previous text must not be shown under this one
         if (!FilesEnabled || q.Length == 0) { ClearFiles(); return; }
         _fileText = q;
         _fileTimer.Interval = TimeSpan.FromMilliseconds(Math.Clamp(_cfg.Search.Everything.DebounceMs, 0, 1000));
@@ -1658,12 +1691,12 @@ internal sealed class OverlayWindow : Window
         string text = _fileText;
         if (text.Length == 0) return;
         _everything ??= new EverythingClient(_cfg.Search.Everything);
-        int id = ++_fileQueryId;
+        int id = _fileQuery.Current;
         var sw = Stopwatch.StartNew();
         EverythingResult res;
         try { res = await _everything.QueryAsync(text); }
         catch (Exception) { res = new EverythingResult(EverythingState.Error, 0, new(), 0); }
-        if (id != _fileQueryId || _state == State.Hidden) return;   // a newer keystroke (or closing) made this answer obsolete
+        if (!_fileQuery.IsCurrent(id) || _state == State.Hidden) return;   // a newer keystroke (or closing) made this answer obsolete
         _files = res.Hits; _fileTotal = res.Total; _fileState = res.State;
         if (_fileSel >= _files.Count + (_fileTotal > _files.Count ? 1 : 0)) _fileSel = -1;
         RebuildFiles();
@@ -1795,7 +1828,7 @@ internal sealed class OverlayWindow : Window
                     Process.Start(new ProcessStartInfo("explorer.exe", revealArgs!) { UseShellExecute = true });   // a deleted file opens its folder
                     break;
                 case SearchAction.OpenFolder:
-                    Process.Start(new ProcessStartInfo("explorer.exe", $"\"{(h.IsFolder ? h.Full : h.Dir)}\"") { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo("explorer.exe", AppLocation.ExplorerPathArgument(h.IsFolder ? h.Full : h.Dir)) { UseShellExecute = true });
                     break;
                 case SearchAction.OpenWith when !h.IsFolder:
                     try { Process.Start(new ProcessStartInfo(h.Full) { UseShellExecute = true, Verb = "openas" }); }

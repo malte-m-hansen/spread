@@ -73,7 +73,7 @@ internal static class AtlassianData
     public static string MyId { get; private set; } = "";
     public static string PointsField { get; private set; } = "customfield_10006";
     public static string Site => _site;
-    public static AtlassianClient? Client { get; private set; }
+    public static AtlassianClient? Client { get; internal set; }
     public static DateTime? LastOk { get; private set; }
     public static DateTime? LastErrorAt { get; private set; }
     public static string LastError { get; private set; } = "";
@@ -84,6 +84,7 @@ internal static class AtlassianData
     static long _nextMain, _nextFast, _mainAt, _fastAt;
     static int _busy, _fastCount, _gen;
     static string? _upn;
+    static string? _rejectedKey;   // site|e-mail|token that Atlassian answered 401 for: not tried again until one of them changes or the user connects
     static AtlassianState? _state;
     static readonly object Gate = new(), StateGate = new();
     public static string StatePath => Path.Combine(StateDirOverride ?? Config.Dir, "atlassian-state.json");
@@ -91,6 +92,8 @@ internal static class AtlassianData
     /// <summary>Test hooks: the offline tests answer with a fake handler and keep their state file out of %APPDATA%.</summary>
     internal static string? StateDirOverride;
     internal static Func<string, string, string, AtlassianClient> NewClient = (site, email, token) => new AtlassianClient(site, email, token);
+    internal static Func<string, bool> SaveToken = TokenStore.Save;
+    internal static Action<Config> SaveConfig = c => c.Save();
     /// <summary>Milliseconds until the sprint/OKR part and the alerts part are due (for the tests).</summary>
     internal static (long main, long fast) DueInForTests => (_nextMain - Environment.TickCount64, _nextFast - Environment.TickCount64);
 
@@ -239,7 +242,9 @@ internal static class AtlassianData
             {
                 var token = TokenStore.Load();
                 if (token == null) { Commit(gen, () => { Status = "not connected"; _nextMain = now + 5000; }); Raise(); return; }
-                var client = NewClient(a.Site, EmailFor(cfg), token);
+                string email = EmailFor(cfg);
+                if (_rejectedKey == RejectKey(a.Site, email, token)) { Commit(gen, () => { Status = "reconnect"; _nextMain = Environment.TickCount64 + 60_000; }); return; }   // no request: every one is a failed sign-in
+                var client = NewClient(a.Site, email, token);
                 var (id, name) = await JiraData.MeAsync(client);
                 if (!Commit(gen, () => { _site = client.Site; MyId = id; MyName = name; Client = client; })) return;
                 c = client;
@@ -280,10 +285,17 @@ internal static class AtlassianData
         {
             // The token, or only this request (no permission for a board or space, a scope the token lacks)? /myself tells. Showing the connect form for the
             // latter made the panel flip between data and "connect again" every minute, and connecting again cannot fix it.
-            bool tokenOk = false;
-            if (verified != null) try { await JiraData.MeAsync(verified); tokenOk = true; } catch { }
-            if (tokenOk) { Fail(gen, "error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status + " (the token itself is accepted)"); }
-            else { Fail(gen, "reconnect", "HTTP " + e.Status, dropClient: true); Log.Write("atlassian: token rejected (HTTP " + e.Status + ")"); }
+            bool tokenOk = false, refused = verified == null;   // refused: /myself itself answered 401/403; any other failure (network, proxy) proves nothing
+            if (verified != null) try { await JiraData.MeAsync(verified); tokenOk = true; } catch (AtlassianException me) when (me.Status is 401 or 403) { refused = true; } catch { }
+            if (!tokenOk && !refused) { Fail(gen, "error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status + " (could not check the token, will retry)"); }
+            else if (tokenOk) { Fail(gen, "error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status + " (the token itself is accepted)"); }
+            else
+            {
+                Fail(gen, "reconnect", "HTTP " + e.Status, dropClient: true);
+                var tk = TokenStore.Load();
+                if (tk != null) { string key = RejectKey(a.Site, EmailFor(cfg), tk); Commit(gen, () => _rejectedKey = key); }
+                Log.Write("atlassian: token rejected (HTTP " + e.Status + "), not tried again until you connect again");
+            }
         }
         catch (AtlassianException e) { Fail(gen, "error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status); }
         catch (HttpRequestException) { Fail(gen, "offline", "network"); }
@@ -296,6 +308,8 @@ internal static class AtlassianData
         }
         Raise();
     }
+
+    static string RejectKey(string site, string email, string token) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(AtlassianClient.NormalizeSite(site) + "|" + email.Trim() + "|" + token)));
 
     // ---------------- alerts ----------------
 
@@ -329,10 +343,10 @@ internal static class AtlassianData
         {
             var client = NewClient(site, email, token.Trim());
             var (id, name) = await JiraData.MeAsync(client);
-            if (!TokenStore.Save(token.Trim())) return "Could not store the token in Windows Credential Manager.";
-            cfg.Atlassian.Site = client.Site; cfg.Atlassian.Email = email.Trim(); cfg.Save();
+            if (!SaveToken(token.Trim())) return "Could not store the token in Windows Credential Manager.";
+            cfg.Atlassian.Site = client.Site; cfg.Atlassian.Email = email.Trim(); SaveConfig(cfg);
             // a refresh still running with the old token must not drop this client ("reconnect") or land its answers afterwards
-            lock (Gate) { _gen++; _site = client.Site; MyId = id; MyName = name; Client = client; Status = "ok"; LastOk = DateTime.Now; }
+            lock (Gate) { _gen++; _rejectedKey = null; _site = client.Site; MyId = id; MyName = name; Client = client; Status = "ok"; LastOk = DateTime.Now; }
             RefreshNow(); Raise();
             return null;
         }
@@ -367,7 +381,7 @@ internal static class AtlassianData
 
     public static void Disconnect()
     {
-        lock (Gate) { _gen++; TokenStore.Delete(); Client = null; Status = "not connected"; }   // first the generation: a refresh in flight must not set its client again
+        lock (Gate) { _gen++; _rejectedKey = null; TokenStore.Delete(); Client = null; Status = "not connected"; }   // first the generation: a refresh in flight must not set its client again
         ResetCaches();
     }
 }

@@ -18,13 +18,81 @@ internal static class CoreTest
     public static int Run()
     {
         TaskbarChecks();
+        TaskbarModeChecks();
+        HotkeyChecks();
+        FullscreenChecks();
+        StillFullscreenChecks();
         ConfigChecks();
+        ConfigMergeChecks();
         RestartChecks();
         WallpaperChecks();
+        TickRecoveryChecks();
+        DpiRectChecks();
+        MinimizedPlacementChecks();
         VersionChecks();
+        AppBarChecks();
+        DpiChecks();
         AltMenuChecks();
         Console.WriteLine(_fail == 0 ? "CORE TEST PASSED" : $"CORE TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
+    }
+
+    static void ConfigMergeChecks()
+    {
+        Console.WriteLine("Config merge, nulls, autostart:");
+        string dir = Path.Combine(Path.GetTempPath(), "spread-core-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string file = Path.Combine(dir, "config.json");
+        string oldLog = Log.FilePath;
+        try
+        {
+            Log.FilePath = Path.Combine(dir, "spread.log"); Log.ResetSize();
+
+            File.WriteAllText(file, "{ \"Version\": 17, \"HotEdge\": \"left\", \"FutureThing\": { \"A\": 1 }, \"Dock\": { \"IconSize\": 40, \"NewDockKey\": true } }");
+            var c = Config.LoadFrom(file);
+            c.Layout = "gnome"; c.Save();
+            string saved = File.ReadAllText(file);
+            Check("save keeps keys this build does not know (top level and nested)", saved.Contains("FutureThing") && saved.Contains("NewDockKey") && saved.Contains("\"A\": 1"), saved);
+            Check("save still writes the change next to them", Config.LoadFrom(file) is { LoadFailed: false, Layout: "gnome", HotEdge: "left" });
+
+            File.WriteAllText(file, "{ \"Version\": 17, \"HotEdge\": \"left\" }");
+            c = Config.LoadFrom(file);
+            File.WriteAllText(file, "{ \"Version\": 17, \"HotEdge\": \"right\", \"Dock\": { \"IconSize\": 55 } }");   // hand edit while Spread runs
+            c.Dock.Enabled = !c.Dock.Enabled; bool dockNow = c.Dock.Enabled; c.Save();
+            var back = Config.LoadFrom(file);
+            Check("a hand edit made after load survives a Save of another key", back.HotEdge == "right" && back.Dock.IconSize == 55, back.HotEdge + "/" + back.Dock.IconSize);
+            Check("the value the app changed is written", back.Dock.Enabled == dockNow);
+            c.Dock.Enabled = !dockNow; c.Save();
+            Check("a second Save keeps merging (snapshot refreshed after a save)", Config.LoadFrom(file) is { HotEdge: "right" } b2 && b2.Dock.Enabled == !dockNow);
+
+            File.WriteAllText(file, "{ \"Version\":17, \"HotEdge\":\"left\", \"hotedge\":\"right\" }");   // duplicate key: Load accepts it, the merge parse does not
+            c = Config.LoadFrom(file);
+            c.Layout = "gnome"; c.Save();
+            Check("duplicate keys in config.json: a Save still succeeds and the change is in the file", !c.LoadFailed && Config.LoadFrom(file) is { LoadFailed: false, Layout: "gnome" }, File.ReadAllText(file));
+
+            File.WriteAllText(file, "{ \"Version\": 17, \"HotEdge\": \"left\" }");
+            c = Config.LoadFrom(file);
+            c.Layout = "gnome";
+            var hold = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);   // like a virus scanner: no delete/replace while open
+            var release = System.Threading.Tasks.Task.Run(() => { Thread.Sleep(150); hold.Dispose(); });
+            c.Save(); release.Wait();
+            Check("a config.json held open for a moment: the Save retries the swap and lands", Config.LoadFrom(file) is { LoadFailed: false, Layout: "gnome" }, File.ReadAllText(file));
+
+            File.WriteAllText(file, "{ \"Version\": 17, \"Search\": null, \"HideTaskbar\": null }");
+            c = Config.LoadFrom(file);
+            Check("a null settings section gets its defaults", !c.LoadFailed && c.Search != null && c.Search.Keys != null && c.HideTaskbar == new Config().HideTaskbar, $"failed={c.LoadFailed}");
+            File.WriteAllText(file, "{ \"Version\": 15, \"Search\": { \"Keys\": null } }");
+            c = Config.LoadFrom(file);
+            Check("a null nested section gets its defaults (and migrations still run)", !c.LoadFailed && c.Search.Keys != null && c.Version == 17, $"failed={c.LoadFailed}");
+
+            Check("autostart: a value pointing elsewhere is refreshed", Program.ShouldRefreshAutostart("old command", "new command"));
+            Check("autostart: the same value, or autostart off, is left alone", !Program.ShouldRefreshAutostart("same", "same") && !Program.ShouldRefreshAutostart(null, "new command"));
+        }
+        finally
+        {
+            Log.FilePath = oldLog; Log.ResetSize();
+            try { Directory.Delete(dir, true); } catch { }
+        }
     }
 
     static void AltMenuChecks()
@@ -38,12 +106,82 @@ internal static class CoreTest
             && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF010) && !OverlayWindow.IsKeyMenuCommand(WM_KEYDOWN, (IntPtr)0xF100));
     }
 
+    static void DpiChecks()
+    {
+        Console.WriteLine("Screen scale (DPI):");
+        // Spread runs as "dotnet Spread.dll": Windows reads dotnet.exe's manifest, not app.manifest, so the mode must be set in code.
+        // In "system aware" mode (what WPF picks otherwise) the bar's reserved space was off by the ratio of two scales after a dock.
+        Check("the process is per-monitor DPI aware (v2), not system aware", Dpi.IsPerMonitorV2, Dpi.Describe() + " " + (Dpi.StartupError ?? ""));
+        Check("popover x stays on its monitor, in that monitor's own scale", Popover.ClampX(5000, 300, 0, 5120, 1.25) == 4096 - 300 - 8 && Popover.ClampX(-50, 300, 0, 5120, 1.25) == 4);
+        Check("popover x on a monitor left of the primary", Popover.ClampX(-3000, 300, -2560, 0, 1.0) == -2560 + 4 && Popover.ClampX(-100, 300, -2560, 0, 1.0) == -308);
+    }
+
+    static void AppBarChecks()
+    {
+        Console.WriteLine("Top bar (AppBar) after a display change:");
+        Check("bar height follows the monitor scale (32 DIP)", AppBarMath.HeightPx(32, 96) == 32 && AppBarMath.HeightPx(32, 120) == 40 && AppBarMath.HeightPx(32, 144) == 48 && AppBarMath.HeightPx(32, 192) == 64);
+        var mon = new RECT { Left = 0, Top = 0, Right = 5120, Bottom = 2160 };
+        RECT Work(int top) => new() { Left = 0, Top = top, Right = 5120, Bottom = 2160 };
+        Check("a reservation taller than the bar is a gap (the laptop's 48 px left behind on a 125% monitor = 8 px of wallpaper)", AppBarMath.ReservedGap(mon, Work(48), 40) == 8);
+        Check("a matching reservation has no gap; a missing one is negative", AppBarMath.ReservedGap(mon, Work(40), 40) == 0 && AppBarMath.ReservedGap(mon, Work(0), 40) == -40);
+        Check("the gap is measured from the monitor's own top (a monitor not at 0,0)", AppBarMath.ReservedGap(new RECT { Left = -2880, Top = -300, Right = 0, Bottom = 1500 }, new RECT { Left = -2880, Top = -252, Right = 0, Bottom = 1500 }, 48) == 0);
+        Check("checking again is bounded: 400 ms, 1 s, 2.5 s, then give up", AppBarMath.SettleDelayMs(0) == 400 && AppBarMath.SettleDelayMs(1) == 1000 && AppBarMath.SettleDelayMs(2) == 2500 && AppBarMath.SettleDelayMs(3) < 0 && AppBarMath.SettleDelayMs(99) < 0);
+    }
+
     static void VersionChecks()
     {
         Console.WriteLine("Version:");
         Check("version strips the commit suffix", AppInfo.Parse("0.1.0+abc123") == "0.1.0" && AppInfo.Parse("1.2.3-beta.1+x") == "1.2.3-beta.1");
         Check("version falls back to dev", AppInfo.Parse(null) == "dev" && AppInfo.Parse("  ") == "dev" && AppInfo.Parse("+abc") == "dev");
         Check("this build has a real version", AppInfo.Version != "dev" && char.IsDigit(AppInfo.Version[0]), AppInfo.Version);
+    }
+
+    static void TaskbarModeChecks()
+    {
+        Console.WriteLine("Taskbar mode memory and restore latch:");
+        var m = new TaskbarMode();
+        Check("hides are allowed before any restore", m.HideAllowed);
+        m.Remember(false);   // autohide start-up
+        Check("autohide start-up: a later re-hide keeps the window visible (hideWindow false)", !m.HideWindow);
+        m.Remember(true);
+        Check("hidden start-up: a later re-hide hides the window again", m.HideWindow);
+        m.Latch();
+        Check("after a forced restore no hide is allowed", !m.HideAllowed);
+    }
+
+    static void HotkeyChecks()
+    {
+        Console.WriteLine("Hotkey parsing:");
+        bool Is(string s, uint mods, uint vk) => HotkeyParser.TryParse(s, out uint m, out uint v) && m == mods && v == vk;
+        Check("Ctrl+Alt+Space", Is("Ctrl+Alt+Space", 3, 0x20));
+        Check("Ctrl+Alt+1 is the digit 1, not Cancel", Is("Ctrl+Alt+1", 3, 0x31));
+        Check("Ctrl+Shift+9", Is("Ctrl+Shift+9", 6, 0x39));
+        Check("Ctrl+Alt+12 is rejected", !HotkeyParser.TryParse("Ctrl+Alt+12", out _, out _));
+        Check("F5", Is("F5", 0, 0x74));
+        Check("Ctrl+Oem3 still works", HotkeyParser.TryParse("Ctrl+Oem3", out _, out uint v3) && v3 == 0xC0);
+        Check("garbage is rejected", !HotkeyParser.TryParse("Ctrl+Banana", out _, out _) && !HotkeyParser.TryParse("", out _, out _) && !HotkeyParser.TryParse("Ctrl+", out _, out _));
+    }
+
+    static void FullscreenChecks()
+    {
+        Console.WriteLine("Top bar z-order:");
+        Check("no fullscreen app: the bar is topmost", TopBarWindow.ZOrderFor(false) == Native.HWND_TOPMOST);
+        Check("fullscreen app open: the bar stays behind", TopBarWindow.ZOrderFor(true) != Native.HWND_TOPMOST && TopBarWindow.ZOrderFor(true) == (IntPtr)1);
+    }
+
+    static void StillFullscreenChecks()
+    {
+        Console.WriteLine("Top bar fullscreen flag that never got cleared:");
+        var mon = new RECT { Left = 0, Top = 0, Right = 2560, Bottom = 1440 };
+        var full = mon;
+        var normal = new RECT { Left = 100, Top = 100, Right = 900, Bottom = 700 };
+        var other = new RECT { Left = 2560, Top = 0, Right = 5120, Bottom = 1440 };
+        Check("flag set and a window covers the monitor: still fullscreen", TopBarWindow.StillFullscreen(true, full, true, mon));
+        Check("flag set but the foreground window is an ordinary one: cleared", !TopBarWindow.StillFullscreen(true, normal, true, mon));
+        Check("flag set but no foreground window (app killed): cleared", !TopBarWindow.StillFullscreen(true, default, false, mon));
+        Check("flag set but the fullscreen window is on another monitor: cleared", !TopBarWindow.StillFullscreen(true, other, true, mon));
+        Check("flag not set stays not set", !TopBarWindow.StillFullscreen(false, full, true, mon));
+        Check("a window larger than the monitor (borderless overscan) counts", TopBarWindow.StillFullscreen(true, new RECT { Left = -8, Top = -8, Right = 2568, Bottom = 1448 }, true, mon));
     }
 
     static void TaskbarChecks()
@@ -162,13 +300,64 @@ internal static class CoreTest
     static void WallpaperChecks()
     {
         Console.WriteLine("Wallpaper cache:");
+        var m1 = new RECT { Left = 0, Top = 0, Right = 2560, Bottom = 1440 };
+        var m2 = new RECT { Left = 2560, Top = 0, Right = 5120, Bottom = 1440 };   // same size as m1
+        string K(string path, string? mon, RECT r, int pos = 4) => Wallpaper.CacheKey(path, mon, r, pos);
+        const string idA = @"\\?\DISPLAY#A#1", idB = @"\\?\DISPLAY#B#2";
+
         var d = new ConcurrentDictionary<string, int>();
-        foreach (var k in new[] { @"C:\w\a.jpg|5120x2160|4", @"C:\w\b.jpg|5120x2160|4", @"C:\w\a.jpg|2560x1600|4", @"C:\w\a.jpg|1920x1080|4", @"C:\w\a.jpg|3840x2160|4" }) d[k] = 1;
-        Wallpaper.Evict(d, @"C:\w\b.jpg|5120x2160|4", 3);
-        Check("an older picture for the same monitor geometry is dropped", !d.ContainsKey(@"C:\w\a.jpg|5120x2160|4"));
-        Check("the new one is kept and the cache is capped", d.ContainsKey(@"C:\w\b.jpg|5120x2160|4") && d.Count == 3, string.Join(", ", d.Keys));
-        var e = new ConcurrentDictionary<string, int>(); e[@"C:\w\a.jpg|5120x2160|4"] = 1; e[@"C:\w\a.jpg|5120x2160|2"] = 1;
-        Wallpaper.Evict(e, @"C:\w\a.jpg|5120x2160|4", 3);
+        foreach (var k in new[] { K(@"C:\w\a.jpg", idA, m1), K(@"C:\w\b.jpg", idB, m2) }) d[k] = 1;
+        Wallpaper.Evict(d, K(@"C:\w\b.jpg", idB, m2), 3);
+        Check("two same-size monitors with different pictures both stay cached", d.Count == 2 && d.ContainsKey(K(@"C:\w\a.jpg", idA, m1)), string.Join(", ", d.Keys));
+
+        d[K(@"C:\w\c.jpg", idA, m1)] = 1;
+        Wallpaper.Evict(d, K(@"C:\w\c.jpg", idA, m1), 3);
+        Check("a new picture on one monitor evicts only that monitor's old picture",
+            !d.ContainsKey(K(@"C:\w\a.jpg", idA, m1)) && d.ContainsKey(K(@"C:\w\c.jpg", idA, m1)) && d.ContainsKey(K(@"C:\w\b.jpg", idB, m2)), string.Join(", ", d.Keys));
+
+        var e = new ConcurrentDictionary<string, int>();
+        e[K(@"C:\w\a.jpg", idA, m1, 4)] = 1; e[K(@"C:\w\a.jpg", idA, m1, 2)] = 1;
+        Wallpaper.Evict(e, K(@"C:\w\a.jpg", idA, m1, 4), 3);
         Check("a different position mode is a different entry", e.Count == 2);
+
+        var f = new ConcurrentDictionary<string, int>();
+        for (int i = 0; i < 5; i++) f[K($@"C:\w\{i}.jpg", "mon" + i, m1)] = 1;
+        Wallpaper.Evict(f, K(@"C:\w\4.jpg", "mon4", m1), 3);
+        Check("the cache stays capped and keeps the newest", f.Count == 3 && f.ContainsKey(K(@"C:\w\4.jpg", "mon4", m1)), string.Join(", ", f.Keys));
+
+        Check("no monitor id (single monitor): the key still tells monitors apart by their rect",
+            K(@"C:\w\a.jpg", null, m1) != K(@"C:\w\a.jpg", null, m2));
+    }
+
+    static void TickRecoveryChecks()
+    {
+        Console.WriteLine("Tick failure recovery:");
+        Check("a failed tick while opening or closing hides the overview", OverlayWindow.NeedsHideAfterTickFailure(OverlayWindow.State.Opening) && OverlayWindow.NeedsHideAfterTickFailure(OverlayWindow.State.Closing));
+        Check("open (still usable) and hidden (nothing to hide) are left alone", !OverlayWindow.NeedsHideAfterTickFailure(OverlayWindow.State.Open) && !OverlayWindow.NeedsHideAfterTickFailure(OverlayWindow.State.Hidden));
+    }
+
+    static void DpiRectChecks()
+    {
+        Console.WriteLine("DPI change rect:");
+        var a = new RECT { Left = 10, Top = 20, Right = 1930, Bottom = 1100 };
+        var b = a; b.Right += 1;
+        Check("equal rects are the same, any difference is not", WantedRect.SameRect(a, a) && !WantedRect.SameRect(a, b));
+        Check("a DPI suggestion is overwritten when a rect was asked for, left alone when not", WantedRect.ShouldRewrite(a) && !WantedRect.ShouldRewrite(null));
+        Check("re-apply when the window is not where it was asked to be", WantedRect.NeedsReapply(a, b));
+        Check("no re-apply when it is, or when no rect was asked for", !WantedRect.NeedsReapply(a, a) && !WantedRect.NeedsReapply(null, b));
+    }
+
+    static void MinimizedPlacementChecks()
+    {
+        Console.WriteLine("Minimized window position:");
+        RECT R(int l, int t, int r, int b) => new RECT { Left = l, Top = t, Right = r, Bottom = b };
+        bool Eq(RECT x, RECT y) => x.Left == y.Left && x.Top == y.Top && x.Right == y.Right && x.Bottom == y.Bottom;
+        var mon = R(0, 0, 1920, 1080);
+        var n = R(100, 200, 900, 700);
+        Check("top bar of 48 px: moved down by 48", Eq(WindowEnumerator.PlacementToScreen(n, mon, R(0, 48, 1920, 1080), false), R(100, 248, 900, 748)));
+        Check("taskbar on the left (60 px): moved right by 60", Eq(WindowEnumerator.PlacementToScreen(n, mon, R(60, 0, 1920, 1080), false), R(160, 200, 960, 700)));
+        var mon2 = R(1920, 0, 3840, 1080);
+        Check("second monitor: only the work-area inset counts, not the monitor position", Eq(WindowEnumerator.PlacementToScreen(R(100, 200, 900, 700), mon2, R(1920, 48, 3840, 1080), false), R(100, 248, 900, 748)));
+        Check("tool window: already in screen coordinates, unchanged", Eq(WindowEnumerator.PlacementToScreen(n, mon, R(0, 48, 1920, 1080), true), n));
     }
 }

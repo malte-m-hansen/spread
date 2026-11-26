@@ -18,8 +18,20 @@ internal static class Program
 
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
+    /// <summary>
+    /// Only sets the DPI mode, then starts Spread. It must not mention any WPF type: WPF's PresentationCore makes the process
+    /// "system aware" in its module initializer, which runs as soon as a method that uses WPF is compiled, i.e. before that method's first
+    /// line. (app.manifest is not read at all when running as "dotnet Spread.dll".)
+    /// </summary>
     [STAThread]
     static int Main(string[] args)
+    {
+        Dpi.EnablePerMonitorV2();
+        return Run(args);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static int Run(string[] args)
     {
         if (args.Contains("--version")) { Console.WriteLine("Spread " + AppInfo.Version); return 0; }
         if (args.Contains("--layout-test")) return LayoutTest();
@@ -31,6 +43,7 @@ internal static class Program
         if (args.Contains("--github-test")) return GitHubTest.Run(args);
         if (args.Contains("--log-test")) return LogTest.Run();
         if (args.Contains("--core-test")) return CoreTest.Run();
+        if (args.Contains("--dpi-test")) return DpiTest.Run();
         if (args.Contains("--bar-test")) { int f = WidgetTest.Offline(); Console.WriteLine(f == 0 ? "BAR TEST PASSED" : $"BAR TEST FAILED ({f})"); return f == 0 ? 0 : 1; }
         if (args.Contains("--dock-test")) return DockTest.Run(args);
         if (args.Contains("--quicksettings-test")) return QuickSettingsTest.Run(args);
@@ -75,6 +88,7 @@ internal static class Program
 
         var cfg = Config.Load();
         Log.Configure(cfg);
+        RefreshAutostart();
         var apps = new AppCatalog();
         _ = apps.LoadAsync().ContinueWith(_ => apps.PreloadIcons());
 
@@ -145,7 +159,7 @@ internal static class Program
         SetConsoleCtrlHandler(_ctrl, true);
 
         using var tray = BuildTray(overlay, app);
-        Log.Write($"started (v{AppInfo.Version}, hotEdge={cfg.HotEdge} dwell={cfg.HotEdgeDwellMs}ms, layout={cfg.Layout}, hotkey={cfg.Hotkey}, winTap={cfg.WinTap})");
+        Log.Write($"started (v{AppInfo.Version}, dpi mode={Dpi.Describe()}{(Dpi.StartupError != null ? " [" + Dpi.StartupError + "]" : "")}, hotEdge={cfg.HotEdge} dwell={cfg.HotEdgeDwellMs}ms, layout={cfg.Layout}, hotkey={cfg.Hotkey}, winTap={cfg.WinTap})");
         if (args.Contains("--show")) app.Dispatcher.BeginInvoke(new Action(() => overlay.ShowOverlay()));
         try { app.Run(); Log.Write("shutdown: message loop ended"); }
         finally { bar?.Unregister(); TaskbarControl.Restore(); Log.Write("shutdown: done"); }
@@ -158,8 +172,9 @@ internal static class Program
         menu.Items.Add(new System.Windows.Forms.ToolStripMenuItem("Spread " + AppInfo.Version) { Enabled = false });
         menu.Items.Add("Show overview", null, (_, _) => overlay.ShowOverlay(0, false, "tray"));
 
-        var autostart = new System.Windows.Forms.ToolStripMenuItem("Start with Windows") { Checked = IsAutostart(), CheckOnClick = true };
-        autostart.CheckedChanged += (_, _) => SetAutostart(autostart.Checked);
+        var autostart = new System.Windows.Forms.ToolStripMenuItem("Start with Windows") { Checked = IsAutostart() };
+        autostart.Click += (_, _) => { SetAutostart(!IsAutostart()); autostart.Checked = IsAutostart(); };   // the registry is the truth: Quick Settings changes it too
+        menu.Opening += (_, _) => autostart.Checked = IsAutostart();
         menu.Items.Add(autostart);
 
         menu.Items.Add("Restore Windows taskbar", null, (_, _) => TaskbarControl.Restore(force: true));
@@ -183,6 +198,21 @@ internal static class Program
         if (System.IO.Path.GetFileNameWithoutExtension(host).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
             return $"cmd.exe /c start \"\" /min \"{host}\" \"{typeof(Program).Assembly.Location}\"";
         return "\"" + host + "\"";
+    }
+
+    /// <summary>The Run value is only rewritten when it exists (autostart is on) and points somewhere else than this build.</summary>
+    internal static bool ShouldRefreshAutostart(string? current, string wanted) => current != null && !string.Equals(current, wanted, StringComparison.Ordinal);
+
+    /// <summary>The Run value stores the path of the build that switched autostart on; a newer build folder would leave it stale.</summary>
+    static void RefreshAutostart()
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(RunKey, true);
+            string wanted = LaunchCommand();
+            if (k != null && ShouldRefreshAutostart(k.GetValue("Spread") as string, wanted)) { k.SetValue("Spread", wanted); Log.Write("autostart: Run value pointed elsewhere, now " + wanted); }
+        }
+        catch (Exception e) { Log.Write("autostart refresh failed: " + e.GetType().Name); }
     }
 
     internal static bool IsAutostart()

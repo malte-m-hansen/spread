@@ -295,6 +295,13 @@ internal static class GitHubTest
             Refresh();
             Check("refresh: a permission 403 still counts as not readable", GitHubData.Status == "ok" && GitHubData.Alerts.Count == 1 && GitHubData.NoAccess == 1, GitHubData.HealthText(cfg));
 
+            // a moved repository (3xx, redirects are off) is "not readable" for that repository only
+            r.Answer = q => IsB(q) ? Refused(HttpStatusCode.MovedPermanently) : Ok();
+            Refresh();
+            Check("refresh: a 301 for one repository does not fail the refresh, the rest updates", GitHubData.Status == "ok" && GitHubData.Alerts.Count == 1 && GitHubData.NoAccess == 1, GitHubData.HealthText(cfg) + " " + GitHubData.Alerts.Count);
+
+            SeverityChecks(dir);
+
             // Reset (another team) while a refresh is in flight: its answers must not land, nor its state file after the reseed
             r.Answer = _ => Ok();
             r.Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -315,6 +322,48 @@ internal static class GitHubTest
             GitHubData.NewClient = oldFactory; GitHubData.Reset(false); GitHubData.StateDirOverride = null;
             try { Directory.Delete(dir, true); } catch { }
         }
+    }
+
+    /// <summary>Which severities are fetched: the union of the menu, the bar and the toasts; a severity fetched for the first time is remembered, not announced.</summary>
+    static void SeverityChecks(string dir)
+    {
+        var r = new Router();
+        var server = new List<(string repo, int n, string sev)> { ("Contoso/a", 1, "critical"), ("Contoso/a", 2, "high"), ("Contoso/a", 3, "medium") };
+        r.Answer = q =>
+        {
+            var want = (System.Web.HttpUtility.ParseQueryString(q.RequestUri!.Query)["severity"] ?? "").Split(',');
+            string repo = q.RequestUri.AbsolutePath.Contains("/Contoso/a/") ? "Contoso/a" : "Contoso/b";
+            return Json("[" + string.Join(",", server.Where(x => x.repo == repo && want.Contains(x.sev)).Select(x => AlertJson.Replace("\"number\":398", "\"number\":" + x.n).Replace("\"severity\":\"critical\"", "\"severity\":\"" + x.sev + "\""))) + "]");
+        };
+        var old = GitHubData.NewClient; GitHubData.NewClient = c => new GitHubClient(c, r);
+        var announced = new List<string>();
+        GitHubData.OnFresh = f => announced.AddRange(f.Select(a => a.Id));
+        try
+        {
+            var cfg = new Config();
+            cfg.GitHub.Repos = new[] { "Contoso/a" };
+            cfg.GitHub.ListSeverities = new[] { "high" };   // the menu shows high only, but criticals still count in the bar and toast
+            cfg.GitHub.BarSeverities = new[] { "critical" };
+            void Refresh() => GitHubData.RefreshAsync(cfg).GetAwaiter().GetResult();
+            GitHubData.Reset(true);
+            Refresh();
+            Check("severities: ListSeverities=high still fetches criticals (bar counts them)", GitHubData.Status == "ok" && GitHubLogic.Count(GitHubData.Alerts, cfg.GitHub.BarSeverities) == 1 && announced.Count == 0, GitHubData.HealthText(cfg) + " " + string.Join(",", GitHubData.Alerts.Select(a => a.Id)));
+            server.Add(("Contoso/a", 4, "critical")); server.Add(("Contoso/a", 5, "high"));
+            Refresh();
+            Check("severities: a new critical is announced although only high is listed (a new high is not, OnHigh is off)", announced.SequenceEqual(new[] { "Contoso/a#4" }), string.Join(",", announced));
+            announced.Clear();
+            cfg.GitHub.ListSeverities = new[] { "high", "medium" };
+            Refresh();
+            Check("severities: a severity fetched for the first time is not announced", announced.Count == 0 && GitHubData.Alerts.Any(a => a.Severity == "medium"), string.Join(",", announced));
+            cfg.GitHub.Toast.OnHigh = true; cfg.GitHub.ListSeverities = new[] { "critical" };
+            announced.Clear();
+            Refresh();
+            Check("severities: OnHigh adds high to the fetch; its existing alerts are not announced", announced.Count == 0 && GitHubData.Alerts.Any(a => a.Severity == "high"), string.Join(",", announced));
+            server.Add(("Contoso/a", 6, "high"));
+            Refresh();
+            Check("severities: ... but a new high afterwards is", announced.SequenceEqual(new[] { "Contoso/a#6" }), string.Join(",", announced));
+        }
+        finally { GitHubData.NewClient = old; GitHubData.OnFresh = null; GitHubData.Reset(false); }
     }
 
     static async Task<int> Live(GitHubConfig c)

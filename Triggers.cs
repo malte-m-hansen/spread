@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Input;
@@ -231,7 +232,9 @@ internal static class HotkeyParser
                 case "shift": mods |= 4; break;
                 case "win": mods |= 8; break;
                 default:
-                    if (!Enum.TryParse<Key>(part, true, out var key)) return false;
+                    Key key;
+                    if (part.Length == 1 && part[0] >= '0' && part[0] <= '9') key = Key.D0 + (part[0] - '0');   // "1" would parse as the number 1 = Key.Cancel
+                    else if (part.All(char.IsAsciiDigit) || !Enum.TryParse(part, true, out key)) return false;
                     vk = (uint)KeyInterop.VirtualKeyFromKey(key);
                     break;
             }

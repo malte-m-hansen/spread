@@ -63,7 +63,7 @@ dotnet bin\out\Spread.dll
 
 Spread has no .exe of its own; it always runs as `dotnet Spread.dll`. Only one instance runs at a time. A running Spread locks its `Spread.dll`, so build into a new output folder (or quit Spread first) when you want to try a change.
 
-To start it with Windows, use "Start with Windows" in the tray icon's menu.
+To start it with Windows, use "Start with Windows" in the tray icon's menu. It always starts the build Spread last started from, so switching to a new build folder needs no extra step.
 
 ## Using it
 
@@ -134,7 +134,7 @@ The self-tests run from the built dll and do not touch your settings:
 dotnet bin\out\Spread.dll --core-test
 ```
 
-Offline test switches: `--core-test`, `--layout-test`, `--search-test`, `--dock-test`, `--bar-test`, `--toast-test`, `--log-test`, `--atlassian-test`, `--github-test`. Adding `--live` to the Atlassian, GitHub, search or dock tests also runs a few real, read-only queries.
+Offline test switches: `--core-test`, `--layout-test`, `--search-test`, `--dock-test`, `--bar-test`, `--toast-test`, `--log-test`, `--atlassian-test`, `--github-test`, `--dpi-test`. Adding `--live` to the Atlassian, GitHub, search or dock tests also runs a few real, read-only queries.
 
 `node tools\parity.js bin\out\Spread.dll` compares the `gnome` layout with GNOME Shell's own layout code.
 
@@ -169,7 +169,7 @@ If Spread is ended in a way that leaves the Windows taskbar hidden, start it aga
 dotnet bin\out\Spread.dll --restore-taskbar
 ```
 
-The tray menu also has "Restore Windows taskbar".
+The tray menu also has "Restore Windows taskbar". After using it, Spread leaves the taskbar visible until Spread is started again.
 
 ## License
 

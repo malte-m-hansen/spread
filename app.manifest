@@ -13,6 +13,7 @@
     </application>
   </compatibility>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <!-- Not applied when Spread runs as "dotnet Spread.dll" (Windows reads only the .exe's manifest): Dpi.cs sets the same mode in code. -->
     <windowsSettings>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
