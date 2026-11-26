@@ -240,7 +240,8 @@ internal sealed class Config
                 result = theirs;
             }
         }
-        catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) { }   // not readable: write ours as it is
+        catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException or ArgumentException)   // not readable (or duplicate keys): write ours as it is
+        { Log.Write("config merge skipped, writing our values: " + e.Message); }
         string tmp = path + ".tmp";
         using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
         {
@@ -248,7 +249,11 @@ internal sealed class Config
             fs.Write(bytes, 0, bytes.Length);
             fs.Flush(true);   // to disk before the swap: a power loss must not leave an empty config.json
         }
-        File.Move(tmp, path, true);
+        for (int attempt = 1; ; attempt++)   // a virus scanner may hold config.json for a moment
+        {
+            try { File.Move(tmp, path, true); break; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException && attempt < 5) { System.Threading.Thread.Sleep(80); }
+        }
         c._ours = ours;
     }
 

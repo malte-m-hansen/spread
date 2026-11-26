@@ -64,6 +64,19 @@ internal static class CoreTest
             c.Dock.Enabled = !dockNow; c.Save();
             Check("a second Save keeps merging (snapshot refreshed after a save)", Config.LoadFrom(file) is { HotEdge: "right" } b2 && b2.Dock.Enabled == !dockNow);
 
+            File.WriteAllText(file, "{ \"Version\":17, \"HotEdge\":\"left\", \"hotedge\":\"right\" }");   // duplicate key: Load accepts it, the merge parse does not
+            c = Config.LoadFrom(file);
+            c.Layout = "gnome"; c.Save();
+            Check("duplicate keys in config.json: a Save still succeeds and the change is in the file", !c.LoadFailed && Config.LoadFrom(file) is { LoadFailed: false, Layout: "gnome" }, File.ReadAllText(file));
+
+            File.WriteAllText(file, "{ \"Version\": 17, \"HotEdge\": \"left\" }");
+            c = Config.LoadFrom(file);
+            c.Layout = "gnome";
+            var hold = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);   // like a virus scanner: no delete/replace while open
+            var release = System.Threading.Tasks.Task.Run(() => { Thread.Sleep(150); hold.Dispose(); });
+            c.Save(); release.Wait();
+            Check("a config.json held open for a moment: the Save retries the swap and lands", Config.LoadFrom(file) is { LoadFailed: false, Layout: "gnome" }, File.ReadAllText(file));
+
             File.WriteAllText(file, "{ \"Version\": 17, \"Search\": null, \"HideTaskbar\": null }");
             c = Config.LoadFrom(file);
             Check("a null settings section gets its defaults", !c.LoadFailed && c.Search != null && c.Search.Keys != null && c.HideTaskbar == new Config().HideTaskbar, $"failed={c.LoadFailed}");
