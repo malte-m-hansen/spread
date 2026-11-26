@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Spread;
 
@@ -209,21 +210,72 @@ internal sealed class Config
     [System.Text.Json.Serialization.JsonIgnore] public bool LoadFailed { get; private set; }
 
     string _path = FilePath;   // where Save writes (tests load from a temp folder); a field, so it is not serialized
+    JsonNode? _ours;           // what Spread itself last loaded or wrote: the base of the 3-way merge in Save
 
     public void Save()
     {
         if (LoadFailed) { Log.Write("config not saved: config.json could not be read at start (fix it and restart Spread)"); return; }
-        try { WriteFile(this, _path); }
+        try { WriteFile(this, _path, _ours); }
         catch (Exception e) { Log.Write("config save failed: " + e.Message); }
     }
 
-    /// <summary>Write to a temporary file, then swap it in: a crash or full disk mid-write never leaves a truncated config.json.</summary>
-    static void WriteFile(Config c, string path)
+    /// <summary>
+    /// Write to a temporary file, then swap it in: a crash or full disk mid-write never leaves a truncated config.json.
+    /// Merge, not overwrite: only the values this process changed since it last loaded/wrote (current vs <paramref name="last"/>) are put into
+    /// the file as it is on disk now, so keys this build does not know and hand edits made while Spread runs survive.
+    /// last == null writes every value (migrations, so new keys become visible). A missing or unparsable file is simply replaced.
+    /// </summary>
+    static void WriteFile(Config c, string path, JsonNode? last)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var ours = JsonSerializer.SerializeToNode(c, Opts)!;
+        JsonNode result = ours;
+        try
+        {
+            if (File.Exists(path) && ours is JsonObject o
+                && JsonNode.Parse(File.ReadAllText(path), new JsonNodeOptions { PropertyNameCaseInsensitive = true },
+                    new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true }) is JsonObject theirs)
+            {
+                Merge(o, theirs, last as JsonObject);
+                result = theirs;
+            }
+        }
+        catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) { }   // not readable: write ours as it is
         string tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(c, Opts));
+        using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            var bytes = new System.Text.UTF8Encoding(false).GetBytes(result.ToJsonString(Opts));
+            fs.Write(bytes, 0, bytes.Length);
+            fs.Flush(true);   // to disk before the swap: a power loss must not leave an empty config.json
+        }
         File.Move(tmp, path, true);
+        c._ours = ours;
+    }
+
+    /// <summary>Copy every value that differs from <paramref name="last"/> into <paramref name="theirs"/>; objects are merged key by key, arrays and primitives as a whole.</summary>
+    static void Merge(JsonObject ours, JsonObject theirs, JsonObject? last)
+    {
+        foreach (var (key, val) in System.Linq.Enumerable.ToList(ours))
+        {
+            JsonNode? lv = last != null && last.TryGetPropertyValue(key, out var l) ? l : null;
+            if (last != null && last.ContainsKey(key) && JsonNode.DeepEquals(val, lv)) continue;   // unchanged by us: the file's value stands
+            if (val is JsonObject vo && theirs[key] is JsonObject to) Merge(vo, to, lv as JsonObject);
+            else theirs[key] = val?.DeepClone();
+        }
+        if (last != null) foreach (var (key, _) in System.Linq.Enumerable.ToList(last)) if (!ours.ContainsKey(key)) theirs.Remove(key);
+    }
+
+    /// <summary>A hand-edited null ("Search": null) parses fine but would crash later code: put the default back, also inside nested settings.</summary>
+    static void FillNulls(object obj, object fresh)
+    {
+        foreach (var p in obj.GetType().GetProperties())
+        {
+            if (p.GetIndexParameters().Length > 0 || !p.CanRead || p.SetMethod is not { IsPublic: true } || p.PropertyType.IsValueType) continue;
+            if (p.IsDefined(typeof(System.Text.Json.Serialization.JsonIgnoreAttribute), true)) continue;
+            var v = p.GetValue(obj); var d = p.GetValue(fresh);
+            if (v == null) { if (d != null) p.SetValue(obj, d); }
+            else if (d != null && v.GetType() == d.GetType() && v.GetType().Assembly == typeof(Config).Assembly) FillNulls(v, d);
+        }
     }
 
     static string ReadWithRetry(string path)
@@ -254,6 +306,8 @@ internal sealed class Config
                     return new Config { LoadFailed = true, _path = path };
                 }
                 loaded._path = path;
+                FillNulls(loaded, new Config());
+                loaded._ours = JsonSerializer.SerializeToNode(loaded, Opts);   // the base for Save's merge; migrations below then count as our changes
                 if (loaded.Version < 2)
                 {
                     // v2: the old 150 ms dwell was the previous default, not a deliberate choice.
@@ -354,13 +408,13 @@ internal sealed class Config
                 return loaded;
             }
             var c = new Config { Version = 17, TrayStrip = false, _path = path };
-            WriteFile(c, path);
+            WriteFile(c, path, null);
             return c;
         }
         catch (Exception e) { Log.Write("config load failed: " + e.Message); return new Config { LoadFailed = File.Exists(path), _path = path }; }
 
         // a migration that cannot be written keeps the migrated settings in memory; the next start tries again
-        static void Persist(Config c) { try { WriteFile(c, c._path); } catch (Exception e) { Log.Write("config migration not saved: " + e.GetType().Name); } }
+        static void Persist(Config c) { try { WriteFile(c, c._path, null); } catch (Exception e) { Log.Write("config migration not saved: " + e.GetType().Name); } }
     }
 }
 

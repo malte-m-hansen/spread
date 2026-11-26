@@ -88,6 +88,7 @@ internal static class Program
 
         var cfg = Config.Load();
         Log.Configure(cfg);
+        RefreshAutostart();
         var apps = new AppCatalog();
         _ = apps.LoadAsync().ContinueWith(_ => apps.PreloadIcons());
 
@@ -171,8 +172,9 @@ internal static class Program
         menu.Items.Add(new System.Windows.Forms.ToolStripMenuItem("Spread " + AppInfo.Version) { Enabled = false });
         menu.Items.Add("Show overview", null, (_, _) => overlay.ShowOverlay(0, false, "tray"));
 
-        var autostart = new System.Windows.Forms.ToolStripMenuItem("Start with Windows") { Checked = IsAutostart(), CheckOnClick = true };
-        autostart.CheckedChanged += (_, _) => SetAutostart(autostart.Checked);
+        var autostart = new System.Windows.Forms.ToolStripMenuItem("Start with Windows") { Checked = IsAutostart() };
+        autostart.Click += (_, _) => { SetAutostart(!IsAutostart()); autostart.Checked = IsAutostart(); };   // the registry is the truth: Quick Settings changes it too
+        menu.Opening += (_, _) => autostart.Checked = IsAutostart();
         menu.Items.Add(autostart);
 
         menu.Items.Add("Restore Windows taskbar", null, (_, _) => TaskbarControl.Restore(force: true));
@@ -196,6 +198,21 @@ internal static class Program
         if (System.IO.Path.GetFileNameWithoutExtension(host).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
             return $"cmd.exe /c start \"\" /min \"{host}\" \"{typeof(Program).Assembly.Location}\"";
         return "\"" + host + "\"";
+    }
+
+    /// <summary>The Run value is only rewritten when it exists (autostart is on) and points somewhere else than this build.</summary>
+    internal static bool ShouldRefreshAutostart(string? current, string wanted) => current != null && !string.Equals(current, wanted, StringComparison.Ordinal);
+
+    /// <summary>The Run value stores the path of the build that switched autostart on; a newer build folder would leave it stale.</summary>
+    static void RefreshAutostart()
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(RunKey, true);
+            string wanted = LaunchCommand();
+            if (k != null && ShouldRefreshAutostart(k.GetValue("Spread") as string, wanted)) { k.SetValue("Spread", wanted); Log.Write("autostart: Run value pointed elsewhere, now " + wanted); }
+        }
+        catch (Exception e) { Log.Write("autostart refresh failed: " + e.GetType().Name); }
     }
 
     internal static bool IsAutostart()
