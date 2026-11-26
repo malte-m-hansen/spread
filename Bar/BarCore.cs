@@ -157,6 +157,10 @@ internal sealed class Popover : Window
         PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) { e.Handled = true; CloseNow(); } };
     }
 
+    /// <summary>Keep a popover inside its monitor. Pixels and scale are that monitor's own (WPF's SystemParameters keep the start-up scale).</summary>
+    internal static double ClampX(double x, double width, int monitorLeftPx, int monitorRightPx, double scale) =>
+        Math.Max(monitorLeftPx / scale + 4, Math.Min(x, monitorRightPx / scale - width - 8));
+
     void PlaceUnder(FrameworkElement anchor, FrameworkElement content)
     {
         double dpi = PresentationSource.FromVisual(anchor)?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
@@ -164,7 +168,9 @@ internal sealed class Popover : Window
         content.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         double w = content.DesiredSize.Width + 30;
         double x = _center ? pt.X / dpi + anchor.ActualWidth / 2 - w / 2 : _alignRight ? pt.X / dpi + anchor.ActualWidth - w : pt.X / dpi;
-        Left = Math.Max(4, Math.Min(x, SystemParameters.PrimaryScreenWidth - w - 8));
+        var mi = new MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+        Native.GetMonitorInfo(Native.MonitorFromPoint(new POINT { X = (int)pt.X, Y = (int)pt.Y }, 2 /*nearest*/), ref mi);
+        Left = ClampX(x, w, mi.rcMonitor.Left, mi.rcMonitor.Right, dpi);
         Top = pt.Y / dpi + 2;
     }
 

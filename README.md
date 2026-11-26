@@ -134,7 +134,7 @@ The self-tests run from the built dll and do not touch your settings:
 dotnet bin\out\Spread.dll --core-test
 ```
 
-Offline test switches: `--core-test`, `--layout-test`, `--search-test`, `--dock-test`, `--bar-test`, `--toast-test`, `--log-test`, `--atlassian-test`, `--github-test`. Adding `--live` to the Atlassian, GitHub, search or dock tests also runs a few real, read-only queries.
+Offline test switches: `--core-test`, `--layout-test`, `--search-test`, `--dock-test`, `--bar-test`, `--toast-test`, `--log-test`, `--atlassian-test`, `--github-test`, `--dpi-test`. Adding `--live` to the Atlassian, GitHub, search or dock tests also runs a few real, read-only queries.
 
 `node tools\parity.js bin\out\Spread.dll` compares the `gnome` layout with GNOME Shell's own layout code.
 

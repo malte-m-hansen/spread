@@ -23,6 +23,7 @@ internal static class CoreTest
         WallpaperChecks();
         VersionChecks();
         AppBarChecks();
+        DpiChecks();
         AltMenuChecks();
         Console.WriteLine(_fail == 0 ? "CORE TEST PASSED" : $"CORE TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
@@ -37,6 +38,16 @@ internal static class CoreTest
         Check("other window commands (minimize, close, move) and other messages are left alone",
             !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF020) && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF060)
             && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF010) && !OverlayWindow.IsKeyMenuCommand(WM_KEYDOWN, (IntPtr)0xF100));
+    }
+
+    static void DpiChecks()
+    {
+        Console.WriteLine("Screen scale (DPI):");
+        // Spread runs as "dotnet Spread.dll": Windows reads dotnet.exe's manifest, not app.manifest, so the mode must be set in code.
+        // In "system aware" mode (what WPF picks otherwise) the bar's reserved space was off by the ratio of two scales after a dock.
+        Check("the process is per-monitor DPI aware (v2), not system aware", Dpi.IsPerMonitorV2, Dpi.Describe() + " " + (Dpi.StartupError ?? ""));
+        Check("popover x stays on its monitor, in that monitor's own scale", Popover.ClampX(5000, 300, 0, 5120, 1.25) == 4096 - 300 - 8 && Popover.ClampX(-50, 300, 0, 5120, 1.25) == 4);
+        Check("popover x on a monitor left of the primary", Popover.ClampX(-3000, 300, -2560, 0, 1.0) == -2560 + 4 && Popover.ClampX(-100, 300, -2560, 0, 1.0) == -308);
     }
 
     static void AppBarChecks()

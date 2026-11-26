@@ -18,8 +18,20 @@ internal static class Program
 
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
+    /// <summary>
+    /// Only sets the DPI mode, then starts Spread. It must not mention any WPF type: WPF's PresentationCore makes the process
+    /// "system aware" in its module initializer, which runs as soon as a method that uses WPF is compiled, i.e. before that method's first
+    /// line. (app.manifest is not read at all when running as "dotnet Spread.dll".)
+    /// </summary>
     [STAThread]
     static int Main(string[] args)
+    {
+        Dpi.EnablePerMonitorV2();
+        return Run(args);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static int Run(string[] args)
     {
         if (args.Contains("--version")) { Console.WriteLine("Spread " + AppInfo.Version); return 0; }
         if (args.Contains("--layout-test")) return LayoutTest();
@@ -31,6 +43,7 @@ internal static class Program
         if (args.Contains("--github-test")) return GitHubTest.Run(args);
         if (args.Contains("--log-test")) return LogTest.Run();
         if (args.Contains("--core-test")) return CoreTest.Run();
+        if (args.Contains("--dpi-test")) return DpiTest.Run();
         if (args.Contains("--bar-test")) { int f = WidgetTest.Offline(); Console.WriteLine(f == 0 ? "BAR TEST PASSED" : $"BAR TEST FAILED ({f})"); return f == 0 ? 0 : 1; }
         if (args.Contains("--dock-test")) return DockTest.Run(args);
         if (args.Contains("--quicksettings-test")) return QuickSettingsTest.Run(args);
@@ -145,7 +158,7 @@ internal static class Program
         SetConsoleCtrlHandler(_ctrl, true);
 
         using var tray = BuildTray(overlay, app);
-        Log.Write($"started (v{AppInfo.Version}, hotEdge={cfg.HotEdge} dwell={cfg.HotEdgeDwellMs}ms, layout={cfg.Layout}, hotkey={cfg.Hotkey}, winTap={cfg.WinTap})");
+        Log.Write($"started (v{AppInfo.Version}, dpi mode={Dpi.Describe()}{(Dpi.StartupError != null ? " [" + Dpi.StartupError + "]" : "")}, hotEdge={cfg.HotEdge} dwell={cfg.HotEdgeDwellMs}ms, layout={cfg.Layout}, hotkey={cfg.Hotkey}, winTap={cfg.WinTap})");
         if (args.Contains("--show")) app.Dispatcher.BeginInvoke(new Action(() => overlay.ShowOverlay()));
         try { app.Run(); Log.Write("shutdown: message loop ended"); }
         finally { bar?.Unregister(); TaskbarControl.Restore(); Log.Write("shutdown: done"); }
