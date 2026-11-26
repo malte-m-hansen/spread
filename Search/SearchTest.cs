@@ -289,13 +289,14 @@ internal static class SearchTest
             Check("shell cache: the next lookup (it works now) is remembered", sc.Lookup("Chrome") == chrome && sc.TryGet("Chrome", out got) && got == chrome && calls == 2);
             Check("shell cache: a cached answer is returned without asking again", sc.Lookup("chrome") == chrome && sc.Wait("Chrome", 1000) == chrome && calls == 2, "calls " + calls);
             Check("shell cache: a definite 'no program' is cached too", sc.Lookup("Nope") == null && sc.TryGet("Nope", out got) && got == null && calls == 3 && sc.Lookup("Nope") == null && calls == 3);
-            var bg = new ShellTargetCache(id => { Thread.Sleep(50); return @"C:\bg\" + id + ".exe"; });
+            bool isBg = false;   // a foreground worker would keep the Spread process alive after exit
+            var bg = new ShellTargetCache(id => { isBg = Thread.CurrentThread.IsBackground; Thread.Sleep(50); return @"C:\bg\" + id + ".exe"; });
             using var done = new ManualResetEventSlim();
             int fired = 0; int apt = -1; bool onUi = true;
             bg.Request("A", () => { fired++; apt = (int)Thread.CurrentThread.GetApartmentState(); onUi = Thread.CurrentThread.Name == null; });
             bg.Request("A", () => { fired++; done.Set(); });   // a second request for the same id waits for the same lookup
             Check("shell cache: Request returns at once, the answer arrives later", !bg.TryGet("A", out _));
-            Check("shell cache: the lookup runs on one background STA thread and reports back", done.Wait(3000) && fired == 2 && bg.TryGet("A", out got) && got == @"C:\bg\A.exe" && apt == (int)ApartmentState.STA && !onUi, $"fired {fired} apt {apt}");
+            Check("shell cache: the lookup runs on one background STA thread and reports back", done.Wait(3000) && fired == 2 && bg.TryGet("A", out got) && got == @"C:\bg\A.exe" && apt == (int)ApartmentState.STA && !onUi && isBg, $"fired {fired} apt {apt} background {isBg}");
             Check("shell cache: Wait gives up after the timeout but the lookup still lands in the cache", new ShellTargetCache(_ => { Thread.Sleep(400); return "x"; }) is { } slow && slow.Wait("S", 50) == null && !slow.TryGet("S", out _) && SpinWait.SpinUntil(() => slow.TryGet("S", out _), 3000));
             Check("shell ids: known-folder ids and drive paths need no shell, anything else does", !AppLocation.NeedsShell(@"{6D809377-6AF0-444B-8957-A3773F02200E}\a.exe") && !AppLocation.NeedsShell(@"C:\a.exe") && AppLocation.NeedsShell("Chrome") && AppLocation.NeedsShell("Pkg!App") && !AppLocation.NeedsShell(""));
         }
