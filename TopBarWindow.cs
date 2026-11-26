@@ -511,6 +511,10 @@ internal sealed class TopBarWindow : Window
         SetPosition();
     }
 
+    /// <summary>Where the bar sits in the z-order: behind everything while a fullscreen app is open, else topmost.</summary>
+    internal static IntPtr ZOrderFor(bool fullscreen) => fullscreen ? HWND_BOTTOM : Native.HWND_TOPMOST;
+    bool _fullscreenApp;
+
     void SetPosition()
     {
         var abd = new Native.APPBARDATA { cbSize = (uint)Marshal.SizeOf<Native.APPBARDATA>(), hWnd = _hwnd, uEdge = Native.ABE_TOP };
@@ -518,7 +522,7 @@ internal sealed class TopBarWindow : Window
         Native.SHAppBarMessage(Native.ABM_QUERYPOS, ref abd);
         abd.rc.Bottom = abd.rc.Top + _heightPx;
         Native.SHAppBarMessage(Native.ABM_SETPOS, ref abd);
-        Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, abd.rc.Left, abd.rc.Top, abd.rc.Width, abd.rc.Height, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+        Native.SetWindowPos(_hwnd, ZOrderFor(_fullscreenApp), abd.rc.Left, abd.rc.Top, abd.rc.Width, abd.rc.Height, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
         _debounce.Stop(); _debounce.Start();
     }
 
@@ -530,7 +534,8 @@ internal sealed class TopBarWindow : Window
             switch (wParam.ToInt32())
             {
                 case Native.ABN_FULLSCREENAPP:   // a fullscreen app is in front: step behind it, come back afterwards
-                    Native.SetWindowPos(_hwnd, lParam != IntPtr.Zero ? HWND_BOTTOM : Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+                    _fullscreenApp = lParam != IntPtr.Zero;
+                    Native.SetWindowPos(_hwnd, ZOrderFor(_fullscreenApp), 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
                     break;
                 case Native.ABN_POSCHANGED:
                     SetPosition();
