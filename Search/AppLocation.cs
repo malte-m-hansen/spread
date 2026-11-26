@@ -1,7 +1,9 @@
 using System;
 using System.IO;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace Spread;
 
@@ -15,7 +17,34 @@ internal static class AppLocation
     [DllImport("shell32.dll")]
     static extern int SHGetKnownFolderPath([MarshalAs(UnmanagedType.LPStruct)] Guid rfid, uint flags, IntPtr token, out IntPtr path);
 
-    public static string? Resolve(string appId) => Resolve(appId, KnownFolder, File.Exists, ShellTarget);
+    /// <summary>Waits for the shell lookup (at most 2 s) when an AppUserModelID is not known yet: for one action the user asked for. Not for the hint line.</summary>
+    public static string? Resolve(string appId) => Resolve(appId, KnownFolder, File.Exists, id => Targets.Wait(id, 2000));
+
+    /// <summary>Does this id need the shell to tell its program (an AppUserModelID or Store id), as opposed to a known-folder id or a drive path?</summary>
+    internal static bool NeedsShell(string appId) => !string.IsNullOrWhiteSpace(appId) && appId[0] != '{' && !IsDrivePath(appId);
+
+    /// <summary>
+    /// The location from what is known right now, never waiting: false when the shell has not been asked about this id yet (ask with <see cref="Request"/>).
+    /// For the key hint, which is refreshed on every key press on the UI thread.
+    /// </summary>
+    public static bool TryGetCached(string appId, out string? path)
+    {
+        if (NeedsShell(appId))
+        {
+            if (!Targets.TryGet(appId, out var target)) { path = null; return false; }
+            path = Resolve(appId, KnownFolder, File.Exists, _ => target);
+            return true;
+        }
+        path = Resolve(appId, KnownFolder, File.Exists);
+        return true;
+    }
+
+    /// <summary>Asks the shell about an id in the background (if it is not known yet); <paramref name="done"/> runs on the worker thread afterwards, also when the lookup failed.</summary>
+    public static void Request(string appId, Action done)
+    {
+        if (!NeedsShell(appId)) { done(); return; }
+        Targets.Request(appId, done);
+    }
 
     internal static string? Resolve(string appId, Func<Guid, string?> knownFolder, Func<string, bool> exists, Func<string, string?>? shellTarget = null)
     {
@@ -40,8 +69,17 @@ internal static class AppLocation
         if (string.IsNullOrWhiteSpace(path)) return null;
         if (exists(path)) return "/select,\"" + path + "\"";
         string? parent = Path.GetDirectoryName(path);
-        // a drive root ends in a backslash, which would swallow the closing quote: it has no spaces, so no quotes
-        return !string.IsNullOrEmpty(parent) && exists(parent) ? (parent.EndsWith('\\') ? parent : "\"" + parent + "\"") : null;
+        return !string.IsNullOrEmpty(parent) && exists(parent) ? ExplorerPathArgument(parent) : null;
+    }
+
+    /// <summary>
+    /// A folder as an explorer.exe argument. A drive root ("C:\", or a bare "C:") ends in a backslash, which would swallow the closing quote: it has no
+    /// spaces, so it goes unquoted. Anything else is quoted, without a trailing backslash.
+    /// </summary>
+    internal static string ExplorerPathArgument(string folder)
+    {
+        if (folder.Length == 2 && folder[1] == ':') return folder + "\\";
+        return folder.Length == 3 && folder[1] == ':' && folder[2] == '\\' ? folder : "\"" + folder.TrimEnd('\\') + "\"";
     }
 
     /// <summary>For a real file or folder.</summary>
@@ -58,28 +96,119 @@ internal static class AppLocation
 
     static bool IsDrivePath(string t) => t.Length > 2 && t[1] == ':' && (t[2] == '\\' || t[2] == '/');
 
-    static readonly ConcurrentDictionary<string, string?> ShellTargets = new(StringComparer.OrdinalIgnoreCase);
+    static readonly ShellTargetCache Targets = new(ShellLookup);
 
-    /// <summary>The program behind an AppUserModelID, as the shell reports it for the Apps folder (what the Start menu shortcut points at). Cached: ids do not change while Spread runs.</summary>
-    static string? ShellTarget(string aumid) => ShellTargets.GetOrAdd(aumid, id =>
+    /// <summary>
+    /// The program behind an AppUserModelID, as the shell reports it for the Apps folder (what the Start menu shortcut points at). Runs on the shell worker thread.
+    /// Throws when the shell fails (that is not an answer, so it is not cached); null when the shell knows no such item or no program.
+    /// </summary>
+    static string? ShellLookup(string aumid)
     {
-        object? shell = null;
+        object? shell = null, folder = null, item = null;
         try
         {
-            var type = Type.GetTypeFromProgID("Shell.Application");
-            if (type == null) return null;
+            var type = Type.GetTypeFromProgID("Shell.Application") ?? throw new InvalidOperationException("no Shell.Application");
             shell = Activator.CreateInstance(type);
-            dynamic folder = ((dynamic)shell!).NameSpace("shell:AppsFolder");
-            dynamic? item = folder?.ParseName(id);
-            return item == null ? null : (string?)item.ExtendedProperty("System.Link.TargetParsingPath");
+            folder = ((dynamic)shell!).NameSpace("shell:AppsFolder") ?? throw new InvalidOperationException("no Apps folder");
+            item = ((dynamic)folder).ParseName(aumid);
+            return item == null ? null : (string?)((dynamic)item).ExtendedProperty("System.Link.TargetParsingPath");
         }
-        catch (Exception e) { Log.Write("app location lookup failed: " + e.GetType().Name); return null; }
-        finally { if (shell != null) Marshal.ReleaseComObject(shell); }
-    });
+        finally
+        {
+            // the COM objects are released at once, not left to the finalizer
+            foreach (var o in new[] { item, folder, shell }) if (o != null) { try { Marshal.FinalReleaseComObject(o); } catch { } }
+        }
+    }
 
     static string? KnownFolder(Guid id)
     {
         if (SHGetKnownFolderPath(id, 0, IntPtr.Zero, out var p) != 0) return null;
         try { return Marshal.PtrToStringUni(p); } finally { Marshal.FreeCoTaskMem(p); }
+    }
+}
+
+/// <summary>
+/// Shell answers for AppUserModelIDs. The shell (Shell.Application over COM) is slow and wants an STA thread, so every lookup runs on ONE dedicated
+/// background thread. Only real answers are remembered: a path, or a definite "no program" (ids do not change while Spread runs). A lookup that
+/// throws is not an answer and is tried again next time.
+/// </summary>
+internal sealed class ShellTargetCache
+{
+    readonly Func<string, string?> _lookup;
+    readonly ConcurrentDictionary<string, string> _known = new(StringComparer.OrdinalIgnoreCase);   // "" = no such item / no program
+    readonly Dictionary<string, List<Action>> _pending = new(StringComparer.OrdinalIgnoreCase);
+
+    public ShellTargetCache(Func<string, string?> lookup) => _lookup = lookup;
+
+    /// <summary>True when the answer is known (path null = the shell has no program for it).</summary>
+    public bool TryGet(string id, out string? path)
+    {
+        if (_known.TryGetValue(id, out var v)) { path = v.Length == 0 ? null : v; return true; }
+        path = null; return false;
+    }
+
+    /// <summary>Asks the shell on the calling thread (the worker, or a test) and remembers a real answer. A failure gives null and is not remembered.</summary>
+    public string? Lookup(string id)
+    {
+        if (TryGet(id, out var cached)) return cached;
+        try { var t = _lookup(id); _known[id] = t ?? ""; return t; }
+        catch (Exception e) { Log.Write("app location lookup failed: " + e.GetType().Name); return null; }
+    }
+
+    /// <summary>Queues the lookup on the worker (one lookup per id at a time); <paramref name="done"/> runs on the worker when it is over, whatever came out.</summary>
+    public void Request(string id, Action done)
+    {
+        if (TryGet(id, out _)) { done(); return; }
+        lock (_pending)
+        {
+            if (_pending.TryGetValue(id, out var waiting)) { waiting.Add(done); return; }
+            _pending[id] = new List<Action> { done };
+        }
+        Worker.Post(() =>
+        {
+            try { Lookup(id); }
+            finally
+            {
+                List<Action> list;
+                lock (_pending) { list = _pending[id]; _pending.Remove(id); }
+                foreach (var d in list) { try { d(); } catch (Exception e) { Log.Write("app location callback failed: " + e.GetType().Name); } }
+            }
+        });
+    }
+
+    /// <summary>The answer, waiting at most <paramref name="ms"/> for the worker; null when unknown or when the shell is too slow (the lookup still lands in the cache).</summary>
+    public string? Wait(string id, int ms)
+    {
+        if (TryGet(id, out var p)) return p;
+        var ev = new ManualResetEventSlim();
+        Request(id, ev.Set);
+        ev.Wait(ms);
+        return TryGet(id, out p) ? p : null;
+    }
+
+    /// <summary>The one STA thread for all shell lookups; started on first use.</summary>
+    static class Worker
+    {
+        static readonly BlockingCollection<Action> Queue = new();
+        static readonly object StartLock = new();
+        static Thread? _thread;
+
+        public static void Post(Action a)
+        {
+            lock (StartLock)
+            {
+                if (_thread == null)
+                {
+                    _thread = new Thread(() =>
+                    {
+                        foreach (var w in Queue.GetConsumingEnumerable())
+                            try { w(); } catch (Exception e) { Log.Write("shell worker: " + e.GetType().Name); }
+                    }) { IsBackground = true, Name = "Spread Shell" };
+                    _thread.SetApartmentState(ApartmentState.STA);
+                    _thread.Start();
+                }
+            }
+            Queue.Add(a);
+        }
     }
 }

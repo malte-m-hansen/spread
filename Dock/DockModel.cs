@@ -99,13 +99,44 @@ internal static class DockBuilder
     static string? IdWord(AppEntry a) => a.AppId.Length >= 4 && a.AppId.All(char.IsAsciiLetterOrDigit) ? a.AppId.ToLowerInvariant() : null;
 
     /// <summary>What the programs of a Start-menu app can be recognized by (read-only once made).</summary>
-    public sealed class AppKeys { public List<string> Hints = new(); public string? IdWord; }
+    public sealed class AppKeys { public List<string> Hints = new(); public string? IdWord; public string? RawExe; }
     static readonly ConditionalWeakTable<AppEntry, AppKeys> KeyCache = new();
     /// <summary>
     /// Worked out once per app (an AppId never changes; a reloaded catalog has new entries): ExeHints runs a regex, and the dock redid it for every
     /// app x window x pass each time the overview opened, frecency for every app x usage key per keystroke. Thread-safe.
     /// </summary>
-    public static AppKeys KeysOf(AppEntry a) => KeyCache.GetValue(a, x => new AppKeys { Hints = ExeHints(x), IdWord = IdWord(x) });
+    public static AppKeys KeysOf(AppEntry a) => KeyCache.GetValue(a, x => new AppKeys { Hints = ExeHints(x), IdWord = IdWord(x), RawExe = RawExe(x) });
+
+    /// <summary>The program's file name as the id spells it, lower case and without ".exe" ("notepad++"): what Norm throws away.</summary>
+    static string? RawExe(AppEntry a)
+    {
+        try
+        {
+            if (a.AppId.Contains('\\') && a.AppId.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) return Path.GetFileNameWithoutExtension(a.AppId).ToLowerInvariant();
+            var m = ExeInId.Match(a.AppId);
+            if (m.Success) return m.Groups["e"].Value.ToLowerInvariant();
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// How well a program fits an app by its exe name, 0 = not at all. `raw` is the program's file name (lower case, no ".exe"), `key` its Norm.
+    /// 4 the exact file name of the app's program, 3 the same after Norm (or a package/app name), 2 the end of a package name (WindowsNotepad ~ notepad),
+    /// 1 only the same after Norm, which drops "+" and the like (notepad++ ~ notepad): the weakest, so the real notepad.exe beats it.
+    /// </summary>
+    public static int ExeStrength(AppKeys k, string raw, string key)
+    {
+        int best = 0;
+        for (int i = 0; i < k.Hints.Count; i++)
+        {
+            string h = k.Hints[i];
+            int s = h == key ? (i == 0 && k.RawExe != null ? (k.RawExe == raw ? 4 : 1) : 3) : key.Length >= 6 && h.EndsWith(key, StringComparison.Ordinal) ? 2 : 0;
+            if (s > best) best = s;
+        }
+        if (k.IdWord != null && k.IdWord == key) best = Math.Max(best, k.IdWord == raw ? 4 : 3);
+        return best;
+    }
 
     /// <summary>Can a program whose (normalized) exe name is `key` be this app?</summary>
     public static bool HintMatches(AppKeys k, string key)
@@ -123,13 +154,27 @@ internal static class DockBuilder
         if (spec.StartsWith("id:", StringComparison.OrdinalIgnoreCase)) { string id = spec[3..].Trim(); return apps.FirstOrDefault(a => string.Equals(a.AppId, id, StringComparison.OrdinalIgnoreCase)); }
         if (spec.StartsWith("exe:", StringComparison.OrdinalIgnoreCase))
         {
-            string key = Norm(Path.GetFileNameWithoutExtension(spec[4..].Trim()));
-            return key.Length == 0 ? null : apps.FirstOrDefault(a => HintMatches(a, key));
+            string file = Path.GetFileNameWithoutExtension(spec[4..].Trim()), key = Norm(file), raw = file.ToLowerInvariant();
+            return key.Length == 0 ? null : apps.Select(a => (a, s: ExeStrength(KeysOf(a), raw, key))).Where(x => x.s > 0).OrderByDescending(x => x.s).FirstOrDefault().a;
         }
         return apps.FirstOrDefault(a => string.Equals(a.Name, spec, StringComparison.OrdinalIgnoreCase)) ?? apps.FirstOrDefault(a => a.Name.StartsWith(spec, StringComparison.OrdinalIgnoreCase));
     }
 
     static string ExeKey(DockWindow w) => string.IsNullOrEmpty(w.ExePath) ? Norm(w.ProcName) : UsageStore.KeyOfExe(w.ExePath);
+    static string RawExe(DockWindow w) => (string.IsNullOrEmpty(w.ExePath) ? w.ProcName : Path.GetFileNameWithoutExtension(w.ExePath)).ToLowerInvariant();
+
+    /// <summary>How well the window's program fits the app (or the exe: pin), by exe name only: see ExeStrength.</summary>
+    static int ExeStrength(AppEntry? a, string? exePath, DockWindow w, string key)
+    {
+        string raw = RawExe(w);
+        int s = 0;
+        if (!string.IsNullOrEmpty(exePath))
+        {
+            string file = Path.GetFileNameWithoutExtension(exePath);
+            if (Norm(file) == key) s = file.ToLowerInvariant() == raw ? 4 : 1;
+        }
+        return a == null ? s : Math.Max(s, ExeStrength(KeysOf(a), raw, key));
+    }
 
     /// <summary>
     /// Order of attempts: the window's own AppUserModelID, then the program's exe name, then the app name. Run for all entries before the next kind of match is tried.
@@ -140,8 +185,7 @@ internal static class DockBuilder
         if (pass == 0) return a != null && !string.IsNullOrEmpty(w.Aumid) && string.Equals(a.AppId, w.Aumid, StringComparison.OrdinalIgnoreCase);
         if (pass == 1)
         {
-            if (!string.IsNullOrEmpty(exePath) && Norm(Path.GetFileNameWithoutExtension(exePath)) == key) return true;
-            return a != null && HintMatches(KeysOf(a), key);
+            return ExeStrength(a, exePath, w, key) > 0;
         }
         return a != null && KeysOf(a).Hints.Count == 0 && UsageStore.KeyMatchesApp(a, key);
     }
@@ -172,6 +216,11 @@ internal static class DockBuilder
                 if (ReferenceEquals(a, app)) continue;
                 for (int p = 0; p < pass && !other; p++) other = Matches(a, null, w, key, p);
                 if (other) break;
+            }
+            if (!other && pass == 1)   // by exe name, another app may fit the program better (notepad++.exe is Notepad++'s, not Notepad's)
+            {
+                int mine = ExeStrength(app, null, w, key);
+                other = apps.Any(a => !ReferenceEquals(a, app) && ExeStrength(a, null, w, key) > mine);
             }
             if (!other) return w.Hwnd;
         }
@@ -219,8 +268,10 @@ internal static class DockBuilder
                 foreach (var w in unclaimed.ToList())
                 {
                     string key = ExeKey(w);
-                    var hit = entries.FirstOrDefault(e => Matches(e.App, e.ExePath, w, key, pass));
+                    var hit = pass == 1 ? entries.Where(e => Matches(e.App, e.ExePath, w, key, 1)).MaxBy(e => ExeStrength(e.App, e.ExePath, w, key)) : entries.FirstOrDefault(e => Matches(e.App, e.ExePath, w, key, pass));
                     if (hit == null) continue;
+                    // a better fit among all apps (not only the pinned ones) keeps the window from this entry
+                    if (pass == 1) { int mine = ExeStrength(hit.App, hit.ExePath, w, key); if (apps.Any(a => !ReferenceEquals(a, hit.App) && ExeStrength(a, null, w, key) > mine)) continue; }
                     hit.Windows.Add(w.Hwnd); hit.Titles.Add(w.Title);
                     hit.Icon ??= w.Icon;
                     unclaimed.Remove(w);
@@ -240,7 +291,7 @@ internal static class DockBuilder
                     string key = ExeKey(w);
                     for (int pass = 0; pass < 3; pass++)
                     {
-                        var app = apps.FirstOrDefault(a => Matches(a, null, w, key, pass));
+                        var app = pass == 1 ? apps.Where(a => Matches(a, null, w, key, 1)).MaxBy(a => ExeStrength(a, null, w, key)) : apps.FirstOrDefault(a => Matches(a, null, w, key, pass));
                         if (app != null) { e = extra.FirstOrDefault(x => x.App == app) ?? new DockEntry { App = app, Name = app.Name, Icon = app.Icon, Key = "id:" + app.AppId }; break; }
                     }
                     e ??= extra.FirstOrDefault(x => x.App == null && x.Key == "exe:" + key) ?? new DockEntry { Name = string.IsNullOrEmpty(w.ProcName) ? "Program" : w.ProcName, Icon = w.Icon, ExePath = w.ExePath, Key = "exe:" + key };

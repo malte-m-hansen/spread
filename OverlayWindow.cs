@@ -131,7 +131,8 @@ internal sealed class OverlayWindow : Window
     readonly TextBlock _keyHint = new() { Foreground = new SolidColorBrush(Color.FromArgb(0x88, 255, 255, 255)), FontSize = 12, FontFamily = new FontFamily("Segoe UI"), Margin = new Thickness(8, 8, 0, 0), IsHitTestVisible = false };
     readonly List<Border> _fileRows = new();
     List<EverythingHit> _files = new();
-    int _fileTotal, _fileSel = -1, _fileQueryId;
+    int _fileTotal, _fileSel = -1;
+    readonly QueryStamp _fileQuery = new();
     bool _hoverArmed;           // while searching, results react to the pointer only after it has really moved
     Point _searchMousePos;
     EverythingState _fileState = EverythingState.Unknown;
@@ -1638,7 +1639,7 @@ internal sealed class OverlayWindow : Window
     bool NewWin(ModifierKeys m) => SearchKeys.Resolve(KeyTarget.App, m, _cfg.Search.Keys) == SearchAction.NewWindow;
 
     /// <summary>The line under the results: what Enter / click does with the selected result, and with the key that is held right now.</summary>
-    void UpdateKeyHint()
+    void UpdateKeyHint(bool ask = true)
     {
         if (!_cfg.Search.Keys.ShowHint || !SearchMode) { _keyHint.Visibility = Visibility.Collapsed; return; }
         bool file = _fileSel >= 0 && _fileSel < _files.Count;
@@ -1647,7 +1648,17 @@ internal sealed class OverlayWindow : Window
         // a Windows setting or tool has no "new window" etc.: Ctrl/Shift/Alt do nothing there, so the hint must not offer them
         if (!file && _results[_sel].Kind != SearchKind.App) { _keyHint.Text = "Enter / click: open"; _keyHint.Visibility = Visibility.Visible; return; }
         var target = file ? KeyTarget.File : KeyTarget.App;
-        string? hintPath = file ? _files[_fileSel].Full : _results[_sel].App is not { } hintApp ? null : AppLocation.Resolve(hintApp.AppId);
+        string? hintPath = null;
+        if (file) hintPath = _files[_fileSel].Full;
+        else if (_results[_sel].App is { } hintApp && !AppLocation.TryGetCached(hintApp.AppId, out hintPath) && ask)
+        {
+            // the shell does not know this id yet: ask on its own thread (typing must not wait for it) and refresh the hint when the answer is there
+            var asked = _results[_sel];
+            AppLocation.Request(hintApp.AppId, () => Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_state != State.Hidden && _fileSel < 0 && _sel >= 0 && _sel < _results.Count && ReferenceEquals(_results[_sel], asked)) UpdateKeyHint(false);
+            })));
+        }
         bool fileIsProgram = file && !_files[_fileSel].IsFolder;
         _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, file || hintPath != null, hintPath != null && AppLocation.CanRunAsAdmin(hintPath) && (!file || fileIsProgram));
         _keyHint.Visibility = Visibility.Visible;
@@ -1660,7 +1671,7 @@ internal sealed class OverlayWindow : Window
 
     void ClearFiles()
     {
-        _fileTimer.Stop(); _fileQueryId++;
+        _fileTimer.Stop(); _fileQuery.Next();
         _files = new(); _fileTotal = 0; _fileSel = -1; _fileText = "";
         _filesPanel.Children.Clear(); _fileRows.Clear();
         _filesBox.Visibility = Visibility.Collapsed;
@@ -1668,6 +1679,7 @@ internal sealed class OverlayWindow : Window
 
     void StartFileSearch(string q)
     {
+        _fileQuery.Next();   // every keystroke: a reply still in flight for the previous text must not be shown under this one
         if (!FilesEnabled || q.Length == 0) { ClearFiles(); return; }
         _fileText = q;
         _fileTimer.Interval = TimeSpan.FromMilliseconds(Math.Clamp(_cfg.Search.Everything.DebounceMs, 0, 1000));
@@ -1679,12 +1691,12 @@ internal sealed class OverlayWindow : Window
         string text = _fileText;
         if (text.Length == 0) return;
         _everything ??= new EverythingClient(_cfg.Search.Everything);
-        int id = ++_fileQueryId;
+        int id = _fileQuery.Current;
         var sw = Stopwatch.StartNew();
         EverythingResult res;
         try { res = await _everything.QueryAsync(text); }
         catch (Exception) { res = new EverythingResult(EverythingState.Error, 0, new(), 0); }
-        if (id != _fileQueryId || _state == State.Hidden) return;   // a newer keystroke (or closing) made this answer obsolete
+        if (!_fileQuery.IsCurrent(id) || _state == State.Hidden) return;   // a newer keystroke (or closing) made this answer obsolete
         _files = res.Hits; _fileTotal = res.Total; _fileState = res.State;
         if (_fileSel >= _files.Count + (_fileTotal > _files.Count ? 1 : 0)) _fileSel = -1;
         RebuildFiles();
@@ -1816,7 +1828,7 @@ internal sealed class OverlayWindow : Window
                     Process.Start(new ProcessStartInfo("explorer.exe", revealArgs!) { UseShellExecute = true });   // a deleted file opens its folder
                     break;
                 case SearchAction.OpenFolder:
-                    Process.Start(new ProcessStartInfo("explorer.exe", $"\"{(h.IsFolder ? h.Full : h.Dir)}\"") { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo("explorer.exe", AppLocation.ExplorerPathArgument(h.IsFolder ? h.Full : h.Dir)) { UseShellExecute = true });
                     break;
                 case SearchAction.OpenWith when !h.IsFolder:
                     try { Process.Start(new ProcessStartInfo(h.Full) { UseShellExecute = true, Verb = "openas" }); }
