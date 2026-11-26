@@ -285,9 +285,10 @@ internal static class AtlassianData
         {
             // The token, or only this request (no permission for a board or space, a scope the token lacks)? /myself tells. Showing the connect form for the
             // latter made the panel flip between data and "connect again" every minute, and connecting again cannot fix it.
-            bool tokenOk = false;
-            if (verified != null) try { await JiraData.MeAsync(verified); tokenOk = true; } catch { }
-            if (tokenOk) { Fail(gen, "error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status + " (the token itself is accepted)"); }
+            bool tokenOk = false, refused = verified == null;   // refused: /myself itself answered 401/403; any other failure (network, proxy) proves nothing
+            if (verified != null) try { await JiraData.MeAsync(verified); tokenOk = true; } catch (AtlassianException me) when (me.Status is 401 or 403) { refused = true; } catch { }
+            if (!tokenOk && !refused) { Fail(gen, "error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status + " (could not check the token, will retry)"); }
+            else if (tokenOk) { Fail(gen, "error", "HTTP " + e.Status); Log.Write("atlassian: HTTP " + e.Status + " (the token itself is accepted)"); }
             else
             {
                 Fail(gen, "reconnect", "HTTP " + e.Status, dropClient: true);
@@ -308,7 +309,7 @@ internal static class AtlassianData
         Raise();
     }
 
-    static string RejectKey(string site, string email, string token) => AtlassianClient.NormalizeSite(site) + "|" + email.Trim() + "|" + token;
+    static string RejectKey(string site, string email, string token) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(AtlassianClient.NormalizeSite(site) + "|" + email.Trim() + "|" + token)));
 
     // ---------------- alerts ----------------
 

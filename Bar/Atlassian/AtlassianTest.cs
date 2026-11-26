@@ -375,6 +375,14 @@ internal static class AtlassianTest
             Check("refresh: a failing Confluence part is an error and keeps the sprint schedule (5 min), alerts retry in 1 min",
                 AtlassianData.Status == "error" && AtlassianData.LastError == "HTTP 403" && AtlassianData.Client != null && AtlassianData.MyWork.Count == 1 && mainIn > 240_000 && fastIn is > 0 and <= 60_000,
                 $"{AtlassianData.Status} {AtlassianData.LastError}, main in {mainIn} ms, alerts in {fastIn} ms");
+
+            // a 401 on a data call while /myself cannot even be reached (network down, proxy) says nothing about the token: it must be tried again
+            AtlassianData.ResetCaches();
+            r.Answer = FakeSite; Refresh();
+            r.Answer = q => q.RequestUri!.AbsolutePath.EndsWith("/myself") ? throw new HttpRequestException("network down") : q.RequestUri.AbsolutePath.StartsWith("/rest/agile") ? new HttpResponseMessage(HttpStatusCode.Unauthorized) : FakeSite(q);
+            AtlassianData.RefreshNow(); Refresh();
+            r.Answer = FakeSite; int before3 = r.Urls.Count; AtlassianData.RefreshNow(); Refresh();
+            Check("refresh: a 401 with /myself unreachable is not remembered as a rejected token", AtlassianData.Status == "ok" && AtlassianData.Client != null && r.Urls.Count > before3, $"{AtlassianData.Status} {r.Urls.Count - before3} requests");
         }
         finally
         {
