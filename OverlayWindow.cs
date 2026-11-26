@@ -36,7 +36,7 @@ internal sealed class OverlayWindow : Window
     bool _gestureKeys, _gestureNav;
     readonly HashSet<string> _gestureKeyWarned = new(StringComparer.OrdinalIgnoreCase);
 
-    enum State { Hidden, Opening, Open, Closing }
+    internal enum State { Hidden, Opening, Open, Closing }
 
     const double RaiseDwellMs = 120, RaiseReleaseMs = 700;
     readonly List<StackInfo> _stacks = new();
@@ -202,6 +202,7 @@ internal sealed class OverlayWindow : Window
         var src = HwndSource.FromHwnd(_hwnd);
         src.CompositionTarget.BackgroundColor = Colors.Transparent;
         src.AddHook(WndProc);
+        src.AddHook(_want.Hook);
         _cache.Attach(_hwnd, () => _state != State.Hidden);
         _snaps.Attach(() => _state != State.Hidden);
         long ex = Native.GetWindowLongPtr(_hwnd, Native.GWL_EXSTYLE).ToInt64();
@@ -355,6 +356,7 @@ internal sealed class OverlayWindow : Window
     double SinceTriggerMs() => (Stopwatch.GetTimestamp() - _trigTs) * 1000.0 / Stopwatch.Frequency;
     void Mark(string name) => _openTrace += $"{name} {SinceTriggerMs():0.0} | ";
 
+    readonly WantedRect _want = new();   // the rect each move asked for (see WantedRect)
     RECT _park;                       // where the windows wait, far off-screen but still "shown"
     IntPtr _prevForeground;           // who had the keyboard before the overview opened
     Native.DWM_TIMING_INFO _dwm0; bool _dwm0ok;
@@ -447,8 +449,7 @@ internal sealed class OverlayWindow : Window
             _stage.ShowAt(view);
             // Mouse-driven opens must not activate the overlay while it animates: WPF's Show() and SWP_SHOWWINDOW both
             // activate by default, and that foreground switch is what stalled the compositor a few frames in.
-            Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, view.Left, view.Top, view.Width, view.Height,
-                Native.SWP_SHOWWINDOW | (keyboard ? 0u : Native.SWP_NOACTIVATE));
+            _want.Move(_hwnd, Native.HWND_TOPMOST, view, Native.SWP_SHOWWINDOW | (keyboard ? 0u : Native.SWP_NOACTIVATE));
             _inputLogBudget = 12; _firstMouseLogged = false;
             InputLog("foreground at open: " + FgName());
             // Take the keyboard right away, for every kind of open: whatever you type the instant the overview appears goes into
@@ -618,6 +619,9 @@ internal sealed class OverlayWindow : Window
         if (top != IntPtr.Zero) Native.ForceForeground(top);
     }
 
+    /// <summary>After a failed animation tick: only a half-open or half-closed overview is stuck (Open still answers keys and Toggle).</summary>
+    internal static bool NeedsHideAfterTickFailure(State s) => s == State.Opening || s == State.Closing;
+
     void FinishHide()
     {
         _snaps.Pause(1500);   // no PrintWindow captures while the desktop is being revealed
@@ -676,7 +680,7 @@ internal sealed class OverlayWindow : Window
     {
         if (SliverPark) _stage.SetBackdrop(0);   // a parked sliver must be fully transparent
         SetNoActivate(true);   // when the foreground window closes, Windows must not hand the keyboard to a parked overlay
-        Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, _park.Left, _park.Top, _park.Width, _park.Height, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+        _want.Move(_hwnd, Native.HWND_TOPMOST, _park, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
         _stage.Park(_park);
     }
 
@@ -1337,7 +1341,24 @@ internal sealed class OverlayWindow : Window
 
     void OnRender(object? sender, EventArgs e)
     {
-        try { Tick(); } catch (Exception ex) { Log.Write("tick: " + ex); StopTicking(); }
+        try { Tick(); }
+        catch (Exception ex)
+        {
+            Log.Write("tick: " + ex); StopTicking();
+            if (NeedsHideAfterTickFailure(_state)) RecoverHide();   // else the topmost opaque overview would stay up and ignore every key
+        }
+    }
+
+    /// <summary>Last resort after a failed tick: hide the overview; if even that throws, force the state and park the windows.</summary>
+    void RecoverHide()
+    {
+        try { FinishHide(); }
+        catch (Exception ex)
+        {
+            Log.Write("hide after failed tick: " + ex);
+            _state = State.Hidden; _p = 0;
+            try { ParkWindows(); } catch (Exception ex2) { Log.Write("park after failed tick: " + ex2.Message); }
+        }
     }
 
     void Tick()

@@ -24,6 +24,9 @@ internal static class CoreTest
         ConfigChecks();
         RestartChecks();
         WallpaperChecks();
+        TickRecoveryChecks();
+        DpiRectChecks();
+        MinimizedPlacementChecks();
         VersionChecks();
         AppBarChecks();
         DpiChecks();
@@ -222,13 +225,64 @@ internal static class CoreTest
     static void WallpaperChecks()
     {
         Console.WriteLine("Wallpaper cache:");
+        var m1 = new RECT { Left = 0, Top = 0, Right = 2560, Bottom = 1440 };
+        var m2 = new RECT { Left = 2560, Top = 0, Right = 5120, Bottom = 1440 };   // same size as m1
+        string K(string path, string? mon, RECT r, int pos = 4) => Wallpaper.CacheKey(path, mon, r, pos);
+        const string idA = @"\\?\DISPLAY#A#1", idB = @"\\?\DISPLAY#B#2";
+
         var d = new ConcurrentDictionary<string, int>();
-        foreach (var k in new[] { @"C:\w\a.jpg|5120x2160|4", @"C:\w\b.jpg|5120x2160|4", @"C:\w\a.jpg|2560x1600|4", @"C:\w\a.jpg|1920x1080|4", @"C:\w\a.jpg|3840x2160|4" }) d[k] = 1;
-        Wallpaper.Evict(d, @"C:\w\b.jpg|5120x2160|4", 3);
-        Check("an older picture for the same monitor geometry is dropped", !d.ContainsKey(@"C:\w\a.jpg|5120x2160|4"));
-        Check("the new one is kept and the cache is capped", d.ContainsKey(@"C:\w\b.jpg|5120x2160|4") && d.Count == 3, string.Join(", ", d.Keys));
-        var e = new ConcurrentDictionary<string, int>(); e[@"C:\w\a.jpg|5120x2160|4"] = 1; e[@"C:\w\a.jpg|5120x2160|2"] = 1;
-        Wallpaper.Evict(e, @"C:\w\a.jpg|5120x2160|4", 3);
+        foreach (var k in new[] { K(@"C:\w\a.jpg", idA, m1), K(@"C:\w\b.jpg", idB, m2) }) d[k] = 1;
+        Wallpaper.Evict(d, K(@"C:\w\b.jpg", idB, m2), 3);
+        Check("two same-size monitors with different pictures both stay cached", d.Count == 2 && d.ContainsKey(K(@"C:\w\a.jpg", idA, m1)), string.Join(", ", d.Keys));
+
+        d[K(@"C:\w\c.jpg", idA, m1)] = 1;
+        Wallpaper.Evict(d, K(@"C:\w\c.jpg", idA, m1), 3);
+        Check("a new picture on one monitor evicts only that monitor's old picture",
+            !d.ContainsKey(K(@"C:\w\a.jpg", idA, m1)) && d.ContainsKey(K(@"C:\w\c.jpg", idA, m1)) && d.ContainsKey(K(@"C:\w\b.jpg", idB, m2)), string.Join(", ", d.Keys));
+
+        var e = new ConcurrentDictionary<string, int>();
+        e[K(@"C:\w\a.jpg", idA, m1, 4)] = 1; e[K(@"C:\w\a.jpg", idA, m1, 2)] = 1;
+        Wallpaper.Evict(e, K(@"C:\w\a.jpg", idA, m1, 4), 3);
         Check("a different position mode is a different entry", e.Count == 2);
+
+        var f = new ConcurrentDictionary<string, int>();
+        for (int i = 0; i < 5; i++) f[K($@"C:\w\{i}.jpg", "mon" + i, m1)] = 1;
+        Wallpaper.Evict(f, K(@"C:\w\4.jpg", "mon4", m1), 3);
+        Check("the cache stays capped and keeps the newest", f.Count == 3 && f.ContainsKey(K(@"C:\w\4.jpg", "mon4", m1)), string.Join(", ", f.Keys));
+
+        Check("no monitor id (single monitor): the key still tells monitors apart by their rect",
+            K(@"C:\w\a.jpg", null, m1) != K(@"C:\w\a.jpg", null, m2));
+    }
+
+    static void TickRecoveryChecks()
+    {
+        Console.WriteLine("Tick failure recovery:");
+        Check("a failed tick while opening or closing hides the overview", OverlayWindow.NeedsHideAfterTickFailure(OverlayWindow.State.Opening) && OverlayWindow.NeedsHideAfterTickFailure(OverlayWindow.State.Closing));
+        Check("open (still usable) and hidden (nothing to hide) are left alone", !OverlayWindow.NeedsHideAfterTickFailure(OverlayWindow.State.Open) && !OverlayWindow.NeedsHideAfterTickFailure(OverlayWindow.State.Hidden));
+    }
+
+    static void DpiRectChecks()
+    {
+        Console.WriteLine("DPI change rect:");
+        var a = new RECT { Left = 10, Top = 20, Right = 1930, Bottom = 1100 };
+        var b = a; b.Right += 1;
+        Check("equal rects are the same, any difference is not", WantedRect.SameRect(a, a) && !WantedRect.SameRect(a, b));
+        Check("a DPI suggestion is overwritten when a rect was asked for, left alone when not", WantedRect.ShouldRewrite(a) && !WantedRect.ShouldRewrite(null));
+        Check("re-apply when the window is not where it was asked to be", WantedRect.NeedsReapply(a, b));
+        Check("no re-apply when it is, or when no rect was asked for", !WantedRect.NeedsReapply(a, a) && !WantedRect.NeedsReapply(null, b));
+    }
+
+    static void MinimizedPlacementChecks()
+    {
+        Console.WriteLine("Minimized window position:");
+        RECT R(int l, int t, int r, int b) => new RECT { Left = l, Top = t, Right = r, Bottom = b };
+        bool Eq(RECT x, RECT y) => x.Left == y.Left && x.Top == y.Top && x.Right == y.Right && x.Bottom == y.Bottom;
+        var mon = R(0, 0, 1920, 1080);
+        var n = R(100, 200, 900, 700);
+        Check("top bar of 48 px: moved down by 48", Eq(WindowEnumerator.PlacementToScreen(n, mon, R(0, 48, 1920, 1080), false), R(100, 248, 900, 748)));
+        Check("taskbar on the left (60 px): moved right by 60", Eq(WindowEnumerator.PlacementToScreen(n, mon, R(60, 0, 1920, 1080), false), R(160, 200, 960, 700)));
+        var mon2 = R(1920, 0, 3840, 1080);
+        Check("second monitor: only the work-area inset counts, not the monitor position", Eq(WindowEnumerator.PlacementToScreen(R(100, 200, 900, 700), mon2, R(1920, 48, 3840, 1080), false), R(100, 248, 900, 748)));
+        Check("tool window: already in screen coordinates, unchanged", Eq(WindowEnumerator.PlacementToScreen(n, mon, R(0, 48, 1920, 1080), true), n));
     }
 }
