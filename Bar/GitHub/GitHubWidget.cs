@@ -114,7 +114,7 @@ internal static class GitHubMenu
         bool bad = GitHubData.Status != "ok";
         sp.Children.Add(BarUi.Txt(GitHubData.HealthText(ctx.Cfg), 11.5, bad ? new SolidColorBrush(Color.FromRgb(0xFF, 0xB3, 0x40)) : BarUi.Dim, FontWeights.Normal));
 
-        var alerts = GitHubData.Alerts;
+        var alerts = GitHubData.Alerts.Where(a => c.ListSeverities.Contains(a.Severity, StringComparer.OrdinalIgnoreCase)).ToList();   // more may be fetched (bar, toasts)
         var crit = alerts.Where(a => a.Severity == "critical").ToList();
         var high = alerts.Where(a => a.Severity == "high").ToList();
         var chips = new WrapPanel { Margin = new Thickness(0, 10, 0, 6) };

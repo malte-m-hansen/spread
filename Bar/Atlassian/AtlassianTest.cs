@@ -349,6 +349,25 @@ internal static class AtlassianTest
             AtlassianData.RefreshNow(); Refresh();
             Check("refresh: a token that /myself refuses means 'connect again'", AtlassianData.Status == "reconnect" && AtlassianData.Client == null, AtlassianData.Status);
 
+            // after a rejected token nothing is sent until the user reconnects or the token/site/e-mail changes (every try is a failed sign-in: lockout risk)
+            int before = r.Urls.Count;
+            for (int i = 0; i < 3; i++) { AtlassianData.RefreshNow(); Refresh(); }
+            Check("refresh: after 'connect again' further ticks send no requests", r.Urls.Count == before && AtlassianData.Status == "reconnect" && AtlassianData.Client == null, $"{r.Urls.Count - before} requests, {AtlassianData.Status}");
+            Environment.SetEnvironmentVariable("SPREAD_ATLASSIAN_TOKEN", "other-token");
+            r.Answer = FakeSite; AtlassianData.RefreshNow(); Refresh();
+            Check("refresh: a changed token is tried again", AtlassianData.Status == "ok" && AtlassianData.Client != null && r.Urls.Count > before, AtlassianData.Status);
+            Environment.SetEnvironmentVariable("SPREAD_ATLASSIAN_TOKEN", "test-token");
+            AtlassianData.ResetCaches();
+            r.Answer = _ => new HttpResponseMessage(HttpStatusCode.Unauthorized);
+            AtlassianData.RefreshNow(); Refresh();
+            Check("refresh: rejected again (setup for the reconnect check)", AtlassianData.Status == "reconnect" && AtlassianData.Client == null, AtlassianData.Status);
+            AtlassianData.SaveToken = _ => true; AtlassianData.SaveConfig = _ => { };   // never Credential Manager or the real config.json
+            r.Answer = FakeSite;
+            string? err = AtlassianData.ConnectAsync(cfg, cfg.Atlassian.Site, "me@example.com", "test-token").GetAwaiter().GetResult();
+            AtlassianData.Client = null;   // forget the client ConnectAsync set: the next refresh must sign in on its own
+            int before2 = r.Urls.Count; AtlassianData.RefreshNow(); Refresh();
+            Check("refresh: after Connect with a working token, refreshing resumes", err == null && AtlassianData.Status == "ok" && AtlassianData.Client != null && r.Urls.Count > before2, $"{err} {AtlassianData.Status}");
+
             // no Confluence access: the Jira part works, the alerts part fails; the sprint/OKR part must not be redone every minute because of it
             r.Answer = q => q.RequestUri!.AbsolutePath.StartsWith("/wiki") ? new HttpResponseMessage(HttpStatusCode.Forbidden) : FakeSite(q);
             AtlassianData.RefreshNow(); Refresh();
@@ -359,7 +378,7 @@ internal static class AtlassianTest
         }
         finally
         {
-            AtlassianData.NewClient = oldFactory;
+            AtlassianData.NewClient = oldFactory; AtlassianData.SaveToken = TokenStore.Save; AtlassianData.SaveConfig = c => c.Save();
             AtlassianData.ResetCaches();
             AtlassianData.StateDirOverride = null;
             Environment.SetEnvironmentVariable("SPREAD_ATLASSIAN_TOKEN", oldEnv);
