@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 
 namespace Spread;
 
@@ -269,6 +270,42 @@ internal static class SearchTest
         Check("admin: only programs can be elevated, not help files or web links", AppLocation.CanRunAsAdmin(@"C:\x\a.exe") && AppLocation.CanRunAsAdmin(@"C:\x\a.CMD") && AppLocation.CanRunAsAdmin(@"C:\x\a.lnk") && AppLocation.CanRunAsAdmin(@"C:\x\a.msc")
             && !AppLocation.CanRunAsAdmin(@"C:\x\a.chm") && !AppLocation.CanRunAsAdmin(@"C:\x\a.url") && !AppLocation.CanRunAsAdmin(""));
         Check("explorer: nothing left to show = null", AppLocation.RevealArguments(@"D:\gone\x.txt", Exists) == null);
+
+        // Everything may report the folder of a drive-root item as "C:" (no backslash): Path.Combine would make the drive-relative "C:x.txt"
+        static string Full(string name, string dir) => new EverythingHit(name, dir, false, 0, default).Full;
+        Check("everything: Full joins a bare drive with a backslash", Full("x.txt", "C:") == @"C:\x.txt" && Full("x.txt", "d:") == @"d:\x.txt");
+        Check("everything: Full keeps normal paths as they are", Full("a b.txt", @"C:\Users\x") == @"C:\Users\x\a b.txt" && Full("x.txt", @"C:\") == @"C:\x.txt" && Full("foo", "") == "foo" && Full("x", @"\\srv\share") == @"\\srv\share\x");
+        Check("everything: a drive itself (name C:, no folder) is C:\\", Full("C:", "") == @"C:\");
+        Check("explorer: a folder argument for a drive root is unquoted, with the backslash", AppLocation.ExplorerPathArgument(@"C:\") == @"C:\" && AppLocation.ExplorerPathArgument("C:") == @"C:\");
+        Check("explorer: any other folder is quoted, a stray trailing backslash dropped", AppLocation.ExplorerPathArgument(@"C:\a b") == @"""C:\a b""" && AppLocation.ExplorerPathArgument(@"C:\a b\") == @"""C:\a b""");
+
+        // the shell lookup: only real answers are cached, never a failure; the lookup runs on a background STA thread
+        {
+            int calls = 0; bool failOnce = true;
+            var sc = new ShellTargetCache(id => { Interlocked.Increment(ref calls); if (failOnce) { failOnce = false; throw new InvalidOperationException("shell busy"); } return id == "Chrome" ? chrome : null; });
+            string? got;
+            Check("shell cache: nothing known at first", !sc.TryGet("Chrome", out got) && got == null);
+            Check("shell cache: a lookup that throws gives null and is not remembered", sc.Lookup("Chrome") == null && !sc.TryGet("Chrome", out _) && calls == 1);
+            Check("shell cache: the next lookup (it works now) is remembered", sc.Lookup("Chrome") == chrome && sc.TryGet("Chrome", out got) && got == chrome && calls == 2);
+            Check("shell cache: a cached answer is returned without asking again", sc.Lookup("chrome") == chrome && sc.Wait("Chrome", 1000) == chrome && calls == 2, "calls " + calls);
+            Check("shell cache: a definite 'no program' is cached too", sc.Lookup("Nope") == null && sc.TryGet("Nope", out got) && got == null && calls == 3 && sc.Lookup("Nope") == null && calls == 3);
+            var bg = new ShellTargetCache(id => { Thread.Sleep(50); return @"C:\bg\" + id + ".exe"; });
+            using var done = new ManualResetEventSlim();
+            int fired = 0; int apt = -1; bool onUi = true;
+            bg.Request("A", () => { fired++; apt = (int)Thread.CurrentThread.GetApartmentState(); onUi = Thread.CurrentThread.Name == null; });
+            bg.Request("A", () => { fired++; done.Set(); });   // a second request for the same id waits for the same lookup
+            Check("shell cache: Request returns at once, the answer arrives later", !bg.TryGet("A", out _));
+            Check("shell cache: the lookup runs on one background STA thread and reports back", done.Wait(3000) && fired == 2 && bg.TryGet("A", out got) && got == @"C:\bg\A.exe" && apt == (int)ApartmentState.STA && !onUi, $"fired {fired} apt {apt}");
+            Check("shell cache: Wait gives up after the timeout but the lookup still lands in the cache", new ShellTargetCache(_ => { Thread.Sleep(400); return "x"; }) is { } slow && slow.Wait("S", 50) == null && !slow.TryGet("S", out _) && SpinWait.SpinUntil(() => slow.TryGet("S", out _), 3000));
+            Check("shell ids: known-folder ids and drive paths need no shell, anything else does", !AppLocation.NeedsShell(@"{6D809377-6AF0-444B-8957-A3773F02200E}\a.exe") && !AppLocation.NeedsShell(@"C:\a.exe") && AppLocation.NeedsShell("Chrome") && AppLocation.NeedsShell("Pkg!App") && !AppLocation.NeedsShell(""));
+        }
+        {
+            var q = new QueryStamp();
+            int first = q.Next();
+            Check("query stamp: the reply for the current text is current", q.IsCurrent(first));
+            int second = q.Next();   // a keystroke while the first query is in flight
+            Check("query stamp: a keystroke makes a reply still in flight obsolete, only the newest one counts", !q.IsCurrent(first) && q.IsCurrent(second) && q.Current == second);
+        }
         if (!live) return;
         // your real start-menu apps (counts only, no names): how many have a program folder
         var catalog = new AppCatalog(); catalog.LoadAsync().GetAwaiter().GetResult();
