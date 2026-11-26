@@ -530,9 +530,24 @@ internal sealed class TopBarWindow : Window
     internal static IntPtr ZOrderFor(bool fullscreen) => fullscreen ? HWND_BOTTOM : Native.HWND_TOPMOST;
     bool _fullscreenApp;
 
+    /// <summary>Explorer only says "fullscreen app gone" if it is alive to see it; keep the flag only while a window still covers the bar's monitor.</summary>
+    internal static bool StillFullscreen(bool flag, RECT foreground, bool hasForeground, RECT monitor) =>
+        flag && hasForeground && foreground.Left <= monitor.Left && foreground.Top <= monitor.Top
+        && foreground.Right >= monitor.Right && foreground.Bottom >= monitor.Bottom;
+
+    void ReassessFullscreen()
+    {
+        if (!_fullscreenApp) return;
+        var fg = Native.GetForegroundWindow();
+        RECT r = default;
+        bool has = fg != IntPtr.Zero && fg != _hwnd && fg != Native.GetShellWindow() && fg != Native.GetDesktopWindow() && Native.GetWindowRect(fg, out r);
+        if (!StillFullscreen(true, r, has, _mon)) { _fullscreenApp = false; Log.Write("top bar: fullscreen flag cleared (no fullscreen window on this monitor any more)"); }
+    }
+
     void SetPosition()
     {
         MeasurePrimary();   // the monitor may have changed since the last registration (ABN_POSCHANGED also arrives after a dock)
+        ReassessFullscreen();
         var abd = new Native.APPBARDATA { cbSize = (uint)Marshal.SizeOf<Native.APPBARDATA>(), hWnd = _hwnd, uEdge = Native.ABE_TOP };
         abd.rc = new RECT { Left = _mon.Left, Top = _mon.Top, Right = _mon.Right, Bottom = _mon.Top + _heightPx };
         Native.SHAppBarMessage(Native.ABM_QUERYPOS, ref abd);
@@ -591,6 +606,7 @@ internal sealed class TopBarWindow : Window
         }
         else if (msg == (int)_taskbarCreatedMsg && _taskbarCreatedMsg != 0)   // Explorer restarted
         {
+            _fullscreenApp = false;   // the new Explorer has no memory of the fullscreen state
             _registered = false; RegisterAppBar();
             if (_cfg.TaskbarManaged) TaskbarControl.ReapplyIfNeeded();
         }

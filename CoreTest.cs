@@ -21,6 +21,7 @@ internal static class CoreTest
         TaskbarModeChecks();
         HotkeyChecks();
         FullscreenChecks();
+        StillFullscreenChecks();
         ConfigChecks();
         ConfigMergeChecks();
         RestartChecks();
@@ -166,6 +167,21 @@ internal static class CoreTest
         Console.WriteLine("Top bar z-order:");
         Check("no fullscreen app: the bar is topmost", TopBarWindow.ZOrderFor(false) == Native.HWND_TOPMOST);
         Check("fullscreen app open: the bar stays behind", TopBarWindow.ZOrderFor(true) != Native.HWND_TOPMOST && TopBarWindow.ZOrderFor(true) == (IntPtr)1);
+    }
+
+    static void StillFullscreenChecks()
+    {
+        Console.WriteLine("Top bar fullscreen flag that never got cleared:");
+        var mon = new RECT { Left = 0, Top = 0, Right = 2560, Bottom = 1440 };
+        var full = mon;
+        var normal = new RECT { Left = 100, Top = 100, Right = 900, Bottom = 700 };
+        var other = new RECT { Left = 2560, Top = 0, Right = 5120, Bottom = 1440 };
+        Check("flag set and a window covers the monitor: still fullscreen", TopBarWindow.StillFullscreen(true, full, true, mon));
+        Check("flag set but the foreground window is an ordinary one: cleared", !TopBarWindow.StillFullscreen(true, normal, true, mon));
+        Check("flag set but no foreground window (app killed): cleared", !TopBarWindow.StillFullscreen(true, default, false, mon));
+        Check("flag set but the fullscreen window is on another monitor: cleared", !TopBarWindow.StillFullscreen(true, other, true, mon));
+        Check("flag not set stays not set", !TopBarWindow.StillFullscreen(false, full, true, mon));
+        Check("a window larger than the monitor (borderless overscan) counts", TopBarWindow.StillFullscreen(true, new RECT { Left = -8, Top = -8, Right = 2568, Bottom = 1448 }, true, mon));
     }
 
     static void TaskbarChecks()
