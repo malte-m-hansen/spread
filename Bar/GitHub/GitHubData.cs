@@ -16,7 +16,7 @@ namespace Spread;
 /// </summary>
 internal static class GitHubData
 {
-    sealed class State { public bool Initialized { get; set; } public List<string> Seen { get; set; } = new(); }
+    sealed class State { public bool Initialized { get; set; } public List<string> Seen { get; set; } = new(); public List<string> Fetched { get; set; } = new(); }
 
     public static string Status { get; private set; } = "starting";
     public static List<AlertLite> Alerts { get; private set; } = new();
@@ -28,11 +28,13 @@ internal static class GitHubData
     public static DateTime? LastErrorAt { get; private set; }
     public static string LastError { get; private set; } = "";
     public static event Action? Changed;
+    internal static Action<List<AlertLite>>? OnFresh;   // test hook: the alerts that would be toasted
 
     static GitHubClient? _client;
     static long _next;
     static int _busy, _gen;
     static DateTime _reposAt = DateTime.MinValue;
+    static HashSet<string> _fetchedSev = new();   // severities the alerts in Alerts were fetched for
     static HashSet<string> _readRepos = new();   // repositories whose alerts are in Alerts (read at least once since the last reset)
     static readonly object Gate = new();
     static string StatePath => Path.Combine(StateDirOverride ?? Config.Dir, "github-state.json");
@@ -65,7 +67,7 @@ internal static class GitHubData
         lock (Gate)
         {
             _gen++;
-            _client = null; Repos = new(); Alerts = new(); NoAccess = 0; NotUpdated = 0; _readRepos = new(); _reposAt = DateTime.MinValue; Status = "starting";
+            _client = null; Repos = new(); Alerts = new(); NoAccess = 0; NotUpdated = 0; _readRepos = new(); _fetchedSev = new(); _reposAt = DateTime.MinValue; Status = "starting";
             if (reseed) { try { if (File.Exists(StatePath)) File.Delete(StatePath); } catch { } }
             _next = 0;
         }
@@ -130,10 +132,13 @@ internal static class GitHubData
             if (!Commit(gen, () => Repos = repos)) return;
 
             // their open alerts, a few repositories at a time
-            var sev = Uri.EscapeDataString(string.Join(",", c.ListSeverities));
+            // fetch what the menu lists, the bar counts and the toasts announce (each of them is filtered again where it is used)
+            var fetchSev = c.ListSeverities.Concat(c.BarSeverities).Concat(c.Toast.OnHigh ? new[] { "critical", "high" } : new[] { "critical" })
+                .Select(x => x.Trim().ToLowerInvariant()).Where(x => x.Length > 0).Distinct().ToList();
+            var sev = Uri.EscapeDataString(string.Join(",", fetchSev));
             var list = new List<AlertLite>();
-            var prev = Alerts; var readBefore = _readRepos; var read = new HashSet<string>();
-            int denied = 0, kept = 0, hardFail = 0; bool authFailed = false;
+            var prev = Alerts; var prevSev = _fetchedSev; var readBefore = _readRepos; var read = new HashSet<string>();
+            int denied = 0, kept = 0, hardFail = 0, moved = 0, lastMoved = 0; bool authFailed = false;
             using var gate = new SemaphoreSlim(4);
             await Task.WhenAll(repos.Where(r => !r.Archived).Select(async r =>
             {
@@ -146,6 +151,7 @@ internal static class GitHubData
                 }
                 catch (GitHubException e) when (e.Status == 401) { authFailed = true; }
                 catch (GitHubException e) when (e.Status is 403 or 404 && !e.RateLimited) { Interlocked.Increment(ref denied); }
+                catch (GitHubException e) when (e.Status is >= 300 and < 400) { Interlocked.Increment(ref denied); Interlocked.Increment(ref moved); lastMoved = e.Status; }   // renamed or transferred repository: redirects are off
                 catch (GitHubException e) when (e.Status >= 500 && readBefore.Contains(r.FullName))
                 {
                     // GitHub failed for this one repository: show what it had last time and let the others update (one broken repository froze the whole list)
@@ -161,13 +167,14 @@ internal static class GitHubData
             var alerts = list.OrderByDescending(a => a.Severity == "critical").ThenBy(a => a.Created).ToList();
             if (!Commit(gen, () =>
             {
-                Alerts = alerts; _readRepos = read;
+                Alerts = alerts; _readRepos = read; _fetchedSev = new HashSet<string>(fetchSev);
                 NoAccess = denied; NotUpdated = kept;
                 Status = "ok"; LastOk = DateTime.Now;
                 _next = Environment.TickCount64 + Math.Max(1, c.RefreshMinutes) * 60_000L;
             })) return;
+            if (moved > 0) Log.Write($"github: {moved} repositories moved (HTTP {lastMoved})");
             if (kept > 0) Log.Write($"github: {kept} repositories not updated (HTTP 5xx)");
-            Announce(cfg, gen);
+            Announce(cfg, gen, prevSev);
         }
         catch (Exception) when (gen != Volatile.Read(ref _gen)) { return; }   // the settings changed meanwhile: these answers are for the old ones
         catch (GitHubException e) when (e.Status == 401) { Fail(gen, "auth", "HTTP 401"); }
@@ -187,7 +194,7 @@ internal static class GitHubData
         return new State();
     }
 
-    static void Announce(Config cfg, int gen)
+    static void Announce(Config cfg, int gen, HashSet<string> prevSev)
     {
         List<AlertLite> fresh;
         lock (Gate)   // with Reset: a reseed must not be undone by a refresh for the old team writing its state afterwards
@@ -195,12 +202,16 @@ internal static class GitHubData
             if (gen != _gen) return;
             var st = LoadState();
             var alerts = Alerts;
+            // severities fetched for the first time (not in the previous refresh, nor in the state file): their existing alerts are remembered, not announced
+            var before = prevSev.Count > 0 ? prevSev : new HashSet<string>(st.Fetched);
+            var newSev = before.Count == 0 ? new HashSet<string>() : new HashSet<string>(_fetchedSev.Where(x => !before.Contains(x)));
             var toastSev = cfg.GitHub.Toast.OnHigh ? new[] { "critical", "high" } : new[] { "critical" };
-            fresh = GitHubLogic.NewAlerts(alerts, new HashSet<string>(st.Seen), toastSev, !st.Initialized);
+            fresh = GitHubLogic.NewAlerts(alerts.Where(a => !newSev.Contains(a.Severity)), new HashSet<string>(st.Seen), toastSev, !st.Initialized);
             // everything present is "known" now (so enabling OnHigh later does not flood), and stays remembered while it is open
-            st.Initialized = true; st.Seen = StateFile.Remember(st.Seen, alerts.Select(a => a.Id), 500);
+            st.Initialized = true; st.Fetched = _fetchedSev.ToList(); st.Seen = StateFile.Remember(st.Seen, alerts.Select(a => a.Id), 500);
             try { StateFile.Write(StatePath, JsonSerializer.Serialize(st)); } catch { }
         }
+        if (fresh.Count > 0) OnFresh?.Invoke(fresh);
         if (!cfg.GitHub.Toast.Enabled || fresh.Count == 0) return;
         var (title, body, footer, url) = GitHubLogic.ToastText(fresh, cfg.GitHub);
         string id = fresh.Count == 1 ? "gh:" + fresh[0].Id : "gh:group:" + string.Join(",", fresh.Select(f => f.Id)).GetHashCode();
