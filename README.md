@@ -63,7 +63,7 @@ dotnet bin\out\Spread.dll
 
 Spread has no .exe of its own; it always runs as `dotnet Spread.dll`. Only one instance runs at a time. A running Spread locks its `Spread.dll`, so build into a new output folder (or quit Spread first) when you want to try a change.
 
-To start it with Windows, use "Start with Windows" in the tray icon's menu. It always starts the build Spread last started from, so switching to a new build folder needs no extra step.
+To start it with Windows, use "Start with Windows" in the tray icon's menu. It always starts the build Spread last started from, so switching to a new build folder needs no extra step. Spread adds two entries: the usual Run entry and a Task Scheduler task that starts it a few seconds after you log on. Windows starts Run entries one after another, so on a PC with many startup apps Spread could come minutes after the desktop; the task does not wait in that queue. The task needs no admin rights; if your PC does not allow it, the Run entry alone still works, and whichever fires first wins. Turning "Start with Windows" off removes both. If you switch Spread off in Task Manager's Startup tab, it stays off.
 
 ## Using it
 
@@ -134,7 +134,7 @@ The self-tests run from the built dll and do not touch your settings:
 dotnet bin\out\Spread.dll --core-test
 ```
 
-Offline test switches: `--core-test`, `--layout-test`, `--search-test`, `--dock-test`, `--bar-test`, `--toast-test`, `--log-test`, `--atlassian-test`, `--github-test`, `--dpi-test`. Adding `--live` to the Atlassian, GitHub, search or dock tests also runs a few real, read-only queries.
+Offline test switches: `--core-test`, `--layout-test`, `--search-test`, `--dock-test`, `--bar-test`, `--toast-test`, `--log-test`, `--atlassian-test`, `--github-test`, `--dpi-test`. `--autostart-task-test` creates and removes a throw-away Task Scheduler task to check the logon task; it is only run by hand, never in the build. Adding `--live` to the Atlassian, GitHub, search or dock tests also runs a few real, read-only queries.
 
 `node tools\parity.js bin\out\Spread.dll` compares the `gnome` layout with GNOME Shell's own layout code.
 

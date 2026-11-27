@@ -32,6 +32,7 @@ internal static class CoreTest
         VersionChecks();
         AppBarChecks();
         DpiChecks();
+        AutostartTaskChecks();
         AltMenuChecks();
         Console.WriteLine(_fail == 0 ? "CORE TEST PASSED" : $"CORE TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
@@ -104,6 +105,30 @@ internal static class CoreTest
         Check("other window commands (minimize, close, move) and other messages are left alone",
             !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF020) && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF060)
             && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF010) && !OverlayWindow.IsKeyMenuCommand(WM_KEYDOWN, (IntPtr)0xF100));
+    }
+
+    static void AutostartTaskChecks()
+    {
+        Console.WriteLine("Start with Windows (scheduled task):");
+        const string cmd = "cmd.exe /c start \"\" /min \"C:\\Program Files\\dotnet\\dotnet.exe\" \"C:\\Spread & Co\\Spread.dll\"";
+        var (exe, args) = AutostartTask.Split(cmd);
+        Check("the launch command is split into program and arguments", exe == "cmd.exe" && args == "/c start \"\" /min \"C:\\Program Files\\dotnet\\dotnet.exe\" \"C:\\Spread & Co\\Spread.dll\"", exe + " | " + args);
+        var (exe2, args2) = AutostartTask.Split("\"C:\\a b\\Spread.exe\"");
+        Check("a quoted program path with spaces is one piece", exe2 == "C:\\a b\\Spread.exe" && args2 == "", exe2 + " | " + args2);
+
+        string xml = AutostartTask.BuildXml("CORP\\jane", exe, args + " " + AutostartTask.FromTaskArg, 10);
+        System.Xml.Linq.XDocument? doc = null;
+        try { doc = System.Xml.Linq.XDocument.Parse(xml); } catch { }
+        Check("the task is valid XML (an & in a path is escaped)", doc != null);
+        Check("the task runs as the logged-on user at logon, not elevated, after 10 s, without a time limit",
+            xml.Contains("<UserId>CORP\\jane</UserId>") && xml.Contains("<LogonTrigger>") && xml.Contains("<Delay>PT10S</Delay>") && xml.Contains("<RunLevel>LeastPrivilege</RunLevel>")
+            && xml.Contains("<LogonType>InteractiveToken</LogonType>") && xml.Contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") && xml.Contains("encoding=\"UTF-16\""));
+        Check("the task marks its start so Spread can honour Task Manager's Startup toggle", AutostartTask.ArgumentsOf(xml) == args + " " + AutostartTask.FromTaskArg, AutostartTask.ArgumentsOf(xml) ?? "null");
+        Check("a task is rewritten when it is missing or points elsewhere, not when it is current",
+            AutostartTask.NeedsUpdate(null, "a") && AutostartTask.NeedsUpdate("a", "b") && !AutostartTask.NeedsUpdate("a", "a"));
+        Check("Task Manager's Startup toggle: enabled (02, 06) or never set start Spread, disabled (03, 07) does not",
+            AutostartTask.StartApproved(null) && AutostartTask.StartApproved(new byte[0]) && AutostartTask.StartApproved(new byte[] { 2, 0, 0, 0 }) && AutostartTask.StartApproved(new byte[] { 6, 0, 0, 0 })
+            && !AutostartTask.StartApproved(new byte[] { 3, 0, 0, 0 }) && !AutostartTask.StartApproved(new byte[] { 7, 0, 0, 0 }));
     }
 
     static void DpiChecks()
