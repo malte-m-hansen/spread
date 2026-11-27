@@ -10,10 +10,11 @@ internal sealed record MenuEntry(MenuAction Action, string Header);
 internal static class ResultMenu
 {
     /// <param name="location">The program's path, or null when it has none (Store apps): then there is no location and no path to copy.</param>
-    public static IReadOnlyList<MenuEntry> ForApp(string? location, bool pinned)
+    /// <param name="packaged">A Store app (no file): it may still have a shell "Run as administrator" (Terminal, Notepad); one without it opens normally.</param>
+    public static IReadOnlyList<MenuEntry> ForApp(string? location, bool pinned, bool packaged = false)
     {
         var list = new List<MenuEntry> { new(MenuAction.Open, "Open"), new(MenuAction.NewWindow, "New window") };
-        if (location != null && AppLocation.CanRunAsAdmin(location)) list.Add(new(MenuAction.RunAsAdmin, "Run as administrator"));
+        if ((location != null && AppLocation.CanRunAsAdmin(location)) || (location == null && packaged)) list.Add(new(MenuAction.RunAsAdmin, "Run as administrator"));
         if (location != null)
         {
             list.Add(new(MenuAction.OpenLocation, "Open file location"));

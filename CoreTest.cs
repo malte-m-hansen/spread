@@ -32,6 +32,8 @@ internal static class CoreTest
         VersionChecks();
         AppBarChecks();
         DpiChecks();
+        AutostartTaskChecks();
+        ResultsLayoutChecks();
         AltMenuChecks();
         Console.WriteLine(_fail == 0 ? "CORE TEST PASSED" : $"CORE TEST FAILED ({_fail})");
         return _fail == 0 ? 0 : 1;
@@ -104,6 +106,59 @@ internal static class CoreTest
         Check("other window commands (minimize, close, move) and other messages are left alone",
             !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF020) && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF060)
             && !OverlayWindow.IsKeyMenuCommand(WM_SYSCOMMAND, (IntPtr)0xF010) && !OverlayWindow.IsKeyMenuCommand(WM_KEYDOWN, (IntPtr)0xF100));
+    }
+
+    static void AutostartTaskChecks()
+    {
+        Console.WriteLine("Start with Windows (scheduled task):");
+        const string cmd = "cmd.exe /c start \"\" /min \"C:\\Program Files\\dotnet\\dotnet.exe\" \"C:\\Spread & Co\\Spread.dll\"";
+        var (exe, args) = AutostartTask.Split(cmd);
+        Check("the launch command is split into program and arguments", exe == "cmd.exe" && args == "/c start \"\" /min \"C:\\Program Files\\dotnet\\dotnet.exe\" \"C:\\Spread & Co\\Spread.dll\"", exe + " | " + args);
+        var (exe2, args2) = AutostartTask.Split("\"C:\\a b\\Spread.exe\"");
+        Check("a quoted program path with spaces is one piece", exe2 == "C:\\a b\\Spread.exe" && args2 == "", exe2 + " | " + args2);
+
+        string xml = AutostartTask.BuildXml("CORP\\jane", exe, args + " " + AutostartTask.FromTaskArg, 10);
+        System.Xml.Linq.XDocument? doc = null;
+        try { doc = System.Xml.Linq.XDocument.Parse(xml); } catch { }
+        Check("the task is valid XML (an & in a path is escaped)", doc != null);
+        Check("the task runs as the logged-on user at logon, not elevated, after 10 s, without a time limit",
+            xml.Contains("<UserId>CORP\\jane</UserId>") && xml.Contains("<LogonTrigger>") && xml.Contains("<Delay>PT10S</Delay>") && xml.Contains("<RunLevel>LeastPrivilege</RunLevel>")
+            && xml.Contains("<LogonType>InteractiveToken</LogonType>") && xml.Contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") && xml.Contains("encoding=\"UTF-16\""));
+        Check("the task marks its start so Spread can honour Task Manager's Startup toggle", AutostartTask.ArgumentsOf(xml) == args + " " + AutostartTask.FromTaskArg, AutostartTask.ArgumentsOf(xml) ?? "null");
+        Check("a task is rewritten when it is missing or points elsewhere, not when it is current",
+            AutostartTask.NeedsUpdate(null, "a") && AutostartTask.NeedsUpdate("a", "b") && !AutostartTask.NeedsUpdate("a", "a"));
+        Check("Task Manager's Startup toggle: enabled (02, 06) or never set start Spread, disabled (03, 07) does not",
+            AutostartTask.StartApproved(null) && AutostartTask.StartApproved(new byte[0]) && AutostartTask.StartApproved(new byte[] { 2, 0, 0, 0 }) && AutostartTask.StartApproved(new byte[] { 6, 0, 0, 0 })
+            && !AutostartTask.StartApproved(new byte[] { 3, 0, 0, 0 }) && !AutostartTask.StartApproved(new byte[] { 7, 0, 0, 0 }));
+    }
+
+    static void ResultsLayoutChecks()
+    {
+        Console.WriteLine("Search results layout:");
+        var v = new ResultsView();
+        for (int i = 0; i < 3; i++) v.StripPanel.Children.Add(new System.Windows.Controls.Border { Width = 124, Height = 110, Margin = new System.Windows.Thickness(3) });
+        v.KeyHint.Text = "Enter: open / go to it   Ctrl: new window   Shift: new window   Ctrl+Shift: run as administrator   Alt: open file location";
+        v.Host.Visibility = System.Windows.Visibility.Visible;
+        var area = new System.Windows.Controls.Grid { Width = 2000, Height = 900 };
+        area.Children.Add(v.Host);
+        void Layout() { area.Measure(new System.Windows.Size(2000, 900)); area.Arrange(new System.Windows.Rect(0, 0, 2000, 900)); area.UpdateLayout(); }
+        System.Windows.Point At(System.Windows.FrameworkElement e) => e.TranslatePoint(new System.Windows.Point(0, 0), area);
+        Layout();
+        var first = At((System.Windows.FrameworkElement)v.StripPanel.Children[0]);
+        // where the text really is: a stretched TextBlock reports the whole panel width, so use its own width
+        double TextCentre() => At(v.KeyHint).X + (v.KeyHint.DesiredSize.Width - v.KeyHint.Margin.Left - v.KeyHint.Margin.Right) / 2;
+        double hintCentre = TextCentre();
+
+        // the Everything list arrives: up to 980 wide, much taller than the icon line
+        v.FilesBox.Visibility = System.Windows.Visibility.Visible; v.FilesBox.Width = 980;
+        v.FilesPanel.Children.Add(new System.Windows.Controls.Border { Height = 320 });
+        Layout();
+        var after = At((System.Windows.FrameworkElement)v.StripPanel.Children[0]);
+        double hintCentreAfter = TextCentre();
+        Check("the icons do not move sideways when the file list arrives", Math.Abs(after.X - first.X) < 0.5, $"x {first.X:0.#} -> {after.X:0.#}");
+        Check("the icons do not move up or down when the file list arrives", Math.Abs(after.Y - first.Y) < 0.5, $"y {first.Y:0.#} -> {after.Y:0.#}");
+        Check("the hint stays centred under the icons", Math.Abs(hintCentreAfter - hintCentre) < 0.5, $"{hintCentre:0.#} -> {hintCentreAfter:0.#}");
+        Check("the icons are centred in the results block", Math.Abs((after.X - 3 + 3 * 130 / 2.0) - 1000) < 1, $"centre {after.X - 3 + 3 * 130 / 2.0:0.#}");
     }
 
     static void DpiChecks()

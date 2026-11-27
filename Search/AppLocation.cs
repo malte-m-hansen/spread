@@ -94,6 +94,17 @@ internal static class AppLocation
     internal static System.Diagnostics.ProcessStartInfo AdminStart(string path) =>
         new(path) { UseShellExecute = true, Verb = "runas", WorkingDirectory = Path.GetDirectoryName(path) ?? "" };
 
+    /// <summary>
+    /// "Package!App": a Store / MSIX app. It has no program file Spread can start itself, but many of them (Windows Terminal, Notepad, Paint) offer
+    /// "Run as administrator" on their shell item, as the Start menu shows; true sandboxed apps (Calculator) do not.
+    /// </summary>
+    internal static bool IsPackagedId(string appId) =>
+        !string.IsNullOrWhiteSpace(appId) && appId.Contains('!') && appId[0] != '{' && appId.IndexOfAny(new[] { '\\', '/', ':' }) < 0;
+
+    /// <summary>Start a Store app elevated through its shell item (the Start menu's "Run as administrator"). Throws when the app has no such verb.</summary>
+    internal static System.Diagnostics.ProcessStartInfo PackagedAdminStart(string appId) =>
+        new("shell:AppsFolder\\" + appId) { UseShellExecute = true, Verb = "runas" };
+
     static bool IsDrivePath(string t) => t.Length > 2 && t[1] == ':' && (t[2] == '\\' || t[2] == '/');
 
     static readonly ShellTargetCache Targets = new(ShellLookup);

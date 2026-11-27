@@ -15,7 +15,7 @@ It is a single WPF application (.NET 8). It does not replace Explorer; it sits o
 - Close windows from the overview (close button, middle click or Ctrl+W).
 
 **Search** (start typing in the overview)
-- Apps from the Start menu, ranked by how often you use them.
+- Apps from the Start menu, found by name, by the program's file name (type "ssms" for SQL Server Management Studio, "winword" for Word) or by the initials of the name ("vsc" for Visual Studio Code). Name matches come before the others. An exact name match comes first; after that the apps you use most, so one you keep choosing rises above names that merely start with what you typed (type "code", pick Visual Studio Code, and it is first from then on).
 - Windows settings pages and tools ("check for updates", "device manager").
 - Files through [Everything](https://www.voidtools.com/), if it is running.
 - An app that is already running is switched to instead of started again.
@@ -63,7 +63,7 @@ dotnet bin\out\Spread.dll
 
 Spread has no .exe of its own; it always runs as `dotnet Spread.dll`. Only one instance runs at a time. A running Spread locks its `Spread.dll`, so build into a new output folder (or quit Spread first) when you want to try a change.
 
-To start it with Windows, use "Start with Windows" in the tray icon's menu. It always starts the build Spread last started from, so switching to a new build folder needs no extra step.
+To start it with Windows, use "Start with Windows" in the tray icon's menu. It always starts the build Spread last started from, so switching to a new build folder needs no extra step. Spread adds two entries: the usual Run entry and a Task Scheduler task that starts it a few seconds after you log on. Windows starts Run entries one after another, so on a PC with many startup apps Spread could come minutes after the desktop; the task does not wait in that queue. The task needs no admin rights; if your PC does not allow it, the Run entry alone still works, and whichever fires first wins. Turning "Start with Windows" off removes both. If you switch Spread off in Task Manager's Startup tab, it stays off.
 
 ## Using it
 
@@ -75,7 +75,7 @@ To start it with Windows, use "Start with Windows" in the tray icon's menu. It a
 | Flip through a photo stack | Mouse wheel, or Page Up / Page Down |
 | Search | Just start typing; Enter opens the selected result |
 | Open an app in a new window / open a file with... | Ctrl+Enter or Shift+Enter (the keys are the same for apps and files; see `Search.Keys`) |
-| Run as administrator | Ctrl+Shift+Enter on an app or a program file (Windows asks for permission, like the taskbar search). Store apps and documents cannot be elevated and just open |
+| Run as administrator | Ctrl+Shift+Enter on an app or a program file (Windows asks for permission, like the taskbar search). Store apps that Windows lets you run as administrator (Terminal, Notepad, Paint) work too; apps that cannot be elevated (Calculator) and documents just open. An elevated app always starts a new window, even if one is already open |
 | Open the location of a result | Alt+Enter (an app: its program folder; a file: shown in Explorer), or right click it. Menu key or Shift+F10 opens the menu for the selected result. Copy path is in the menu |
 | Leave the overview | Esc (the first Esc clears the search), or click on empty space |
 | Show the real taskbar | Ctrl+Alt+T, or the Taskbar button in the top bar |
@@ -134,7 +134,7 @@ The self-tests run from the built dll and do not touch your settings:
 dotnet bin\out\Spread.dll --core-test
 ```
 
-Offline test switches: `--core-test`, `--layout-test`, `--search-test`, `--dock-test`, `--bar-test`, `--toast-test`, `--log-test`, `--atlassian-test`, `--github-test`, `--dpi-test`. Adding `--live` to the Atlassian, GitHub, search or dock tests also runs a few real, read-only queries.
+Offline test switches: `--core-test`, `--layout-test`, `--search-test`, `--dock-test`, `--bar-test`, `--toast-test`, `--log-test`, `--atlassian-test`, `--github-test`, `--dpi-test`. `--autostart-task-test` creates and removes a throw-away Task Scheduler task to check the logon task; it is only run by hand, never in the build. Adding `--live` to the Atlassian, GitHub, search or dock tests also runs a few real, read-only queries.
 
 `node tools\parity.js bin\out\Spread.dll` compares the `gnome` layout with GNOME Shell's own layout code.
 

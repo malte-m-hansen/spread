@@ -111,8 +111,13 @@ internal sealed class OverlayWindow : Window
     readonly TextBox _search = new();
     readonly TextBlock _hint = new();
     readonly Border _frame = new();
-    readonly StackPanel _resultsPanel = new() { Orientation = Orientation.Vertical };
-    readonly Border _resultsHost = new();
+    readonly ResultsView _rv = new();   // the icon line, the Everything file list and the key hint under the search box
+    Border _resultsHost => _rv.Host;
+    ScrollViewer _stripScroll => _rv.Strip;
+    StackPanel _stripPanel => _rv.StripPanel;
+    Border _filesBox => _rv.FilesBox;
+    StackPanel _filesPanel => _rv.FilesPanel;
+    TextBlock _keyHint => _rv.KeyHint;
     readonly DockBar _dock = new();
     bool _pickerOpen;
     List<DockEntry> _dockEntries = new();
@@ -124,11 +129,6 @@ internal sealed class OverlayWindow : Window
     List<SearchItem> _results = new();                       // the single line of icons: apps, settings, tools
     readonly SearchEngine _engine;
     EverythingClient? _everything;
-    readonly ScrollViewer _stripScroll = new() { HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
-    readonly StackPanel _stripPanel = new() { Orientation = Orientation.Horizontal };
-    readonly Border _filesBox = new();
-    readonly StackPanel _filesPanel = new();
-    readonly TextBlock _keyHint = new() { Foreground = new SolidColorBrush(Color.FromArgb(0x88, 255, 255, 255)), FontSize = 12, FontFamily = new FontFamily("Segoe UI"), Margin = new Thickness(8, 8, 0, 0), IsHitTestVisible = false };
     readonly List<Border> _fileRows = new();
     List<EverythingHit> _files = new();
     int _fileTotal, _fileSel = -1;
@@ -290,17 +290,7 @@ internal sealed class OverlayWindow : Window
         _bar.Child = g;
         _root.Children.Add(_bar);
 
-        _stripScroll.Content = _stripPanel;
-        _filesBox.Child = _filesPanel;
-        _filesBox.Visibility = Visibility.Collapsed;
-        _filesBox.Margin = new Thickness(0, 14, 0, 0); _filesBox.Padding = new Thickness(10, 8, 10, 8); _filesBox.CornerRadius = new CornerRadius(16);
-        _filesBox.Background = new SolidColorBrush(Color.FromArgb(0x70, 0, 0, 0));
-        _resultsPanel.Children.Add(_stripScroll); _resultsPanel.Children.Add(_filesBox); _resultsPanel.Children.Add(_keyHint);
-        _resultsHost.Child = _resultsPanel;
         _fileTimer.Tick += (_, _) => { _fileTimer.Stop(); RunFileSearch(); };
-        _resultsHost.VerticalAlignment = VerticalAlignment.Top; _resultsHost.HorizontalAlignment = HorizontalAlignment.Center;
-        _resultsHost.Margin = new Thickness(0, 150, 0, 0);
-        _resultsHost.Opacity = 0; _resultsHost.Visibility = Visibility.Collapsed;
         _root.Children.Add(_resultsHost);
         _dock.Margin = new Thickness(0, 0, 0, 18); _dock.Opacity = 0; _dock.Visibility = Visibility.Collapsed;
         _dock.Activated += DockActivate; _dock.ContextRequested += DockContext; _dock.AddRequested += DockAddPicker;
@@ -1660,7 +1650,10 @@ internal sealed class OverlayWindow : Window
             })));
         }
         bool fileIsProgram = file && !_files[_fileSel].IsFolder;
-        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, file || hintPath != null, hintPath != null && AppLocation.CanRunAsAdmin(hintPath) && (!file || fileIsProgram));
+        // a Store app has no file, but its shell item may carry "Run as administrator" (Terminal, Notepad, Paint); the hint then promises it
+        bool packagedApp = !file && hintPath == null && _results[_sel].App is { } pkgApp && AppLocation.IsPackagedId(pkgApp.AppId);
+        bool canElevate = (hintPath != null && AppLocation.CanRunAsAdmin(hintPath) && (!file || fileIsProgram)) || packagedApp;
+        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, file || hintPath != null, canElevate);
         _keyHint.Visibility = Visibility.Visible;
     }
 
@@ -1865,13 +1858,22 @@ internal sealed class OverlayWindow : Window
     /// <summary>Ctrl+Shift+Enter: start the app's program elevated (the UAC prompt), as the Windows taskbar search does. False when it cannot be: Store apps and help files open as usual.</summary>
     bool RunAsAdmin(SearchItem item)
     {
-        string? path = item.App == null ? null : AppLocation.Resolve(item.App.AppId);
-        if (path == null || !AppLocation.CanRunAsAdmin(path)) return false;
+        var app = item.App;
+        if (app == null) return false;
+        string? path = AppLocation.Resolve(app.AppId);
+        // a program file: start it with the runas verb; a Store app (Terminal, Notepad, Paint): the same verb on its shell item, as the Start menu does
+        System.Diagnostics.ProcessStartInfo? start = path != null && AppLocation.CanRunAsAdmin(path) ? AppLocation.AdminStart(path)
+            : path == null && AppLocation.IsPackagedId(app.AppId) ? AppLocation.PackagedAdminStart(app.AppId) : null;
+        if (start == null) return false;
         _engine.Usage.Record(item.UsageKey, 1);
         BeginClose(IntPtr.Zero);
-        try { Process.Start(AppLocation.AdminStart(path)); }
+        try { Process.Start(start); }
         catch (System.ComponentModel.Win32Exception e) when (e.NativeErrorCode == 1223) { Log.Write("run as administrator: the UAC prompt was declined"); }
-        catch (Exception e) { Log.Write("run as administrator failed: " + e.GetType().Name); }
+        catch (Exception e)
+        {
+            Log.Write("run as administrator failed: " + e.GetType().Name);
+            if (path == null) AppCatalog.Launch(app);   // a Store app without an elevation verb (Calculator): open it normally
+        }
         return true;
     }
 
@@ -1901,7 +1903,7 @@ internal sealed class OverlayWindow : Window
         {
             string? loc = AppLocation.Resolve(app.AppId);
             bool pinned = _cfg.Dock.Pinned.Any(p => DockBuilder.ResolvePin(p, _apps.All) == app);
-            entries = ResultMenu.ForApp(loc, pinned);
+            entries = ResultMenu.ForApp(loc, pinned, AppLocation.IsPackagedId(app.AppId));
             run = a => RunAppMenu(item, app, loc, a);
         }
         else if (hit != null) { entries = ResultMenu.ForFile(hit.IsFolder, hit.Full); run = a => RunFileMenu(hit, a); }

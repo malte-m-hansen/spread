@@ -53,7 +53,7 @@ internal static class SearchKeys
             var a = Resolve(target, m, c);
             bool app = target == KeyTarget.App;
             if (app && !hasLocation && a is SearchAction.Reveal or SearchAction.OpenFolder) return SearchAction.Default;
-            if (((app && !hasLocation) || !canRunAsAdmin) && a == SearchAction.RunAsAdmin) return SearchAction.Default;
+            if (!canRunAsAdmin && a == SearchAction.RunAsAdmin) return SearchAction.Default;
             return a;
         }
         if (mods != ModifierKeys.None && (mods & (ModifierKeys.Alt | ModifierKeys.Control | ModifierKeys.Shift)) != 0)
