@@ -71,6 +71,17 @@ internal sealed class SearchEngine
     /// <summary>0 exact title, 1 any other title match (tiers 1-3), 2 keyword match (tiers 4-5). Usage can reorder inside a class, never across.</summary>
     internal static int MatchClass(int tier) => tier <= 0 ? 0 : tier <= 3 ? 1 : 2;
 
+    /// <summary>First letter of each word of a title that starts with a letter: "SQL Server Management Studio 20" -> "ssms", "Visual Studio Code" -> "vsc".</summary>
+    internal static string Initials(string name) =>
+        new string(name.Split(Seps, StringSplitOptions.RemoveEmptyEntries).Where(w => char.IsLetter(w[0])).Select(w => char.ToLowerInvariant(w[0])).ToArray());
+
+    /// <summary>What an app can also be found by, as Windows search does: its program's file name and the initials of its title.</summary>
+    static string[] AppKeywords(AppEntry a)
+    {
+        string exe = a.ExeName, ini = Initials(a.Name);
+        return exe.Length > 0 && ini.Length > 1 ? new[] { exe, ini } : exe.Length > 0 ? new[] { exe } : ini.Length > 1 ? new[] { ini } : Array.Empty<string>();
+    }
+
     public List<SearchItem> Query(string text)
     {
         string q = text.Trim();
@@ -79,7 +90,7 @@ internal sealed class SearchEngine
         var c = new List<(int tier, double fr, int kind, int len, SearchItem item)>();
         foreach (var a in _apps.All)
         {
-            int t = Tier(a.Name, Array.Empty<string>(), q);
+            int t = Tier(a.Name, AppKeywords(a), q);
             if (t < 0) continue;
             c.Add((t, _usage.ScoreOfApp(a), 0, a.Name.Length, new SearchItem { Kind = SearchKind.App, Title = a.Name, App = a, UsageKey = "app:" + UsageStore.Norm(a.Name) }));
         }

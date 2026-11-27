@@ -151,6 +151,22 @@ internal static class SearchTest
         var exactEngine = new SearchEngine(exactCat, SettingsProvider.Load(cfg.Search), exactUsage, cfg.Search);
         Check("ranking: an app named exactly like the query still comes first", exactEngine.Query("code").First().Title == "Code", string.Join(" | ", exactEngine.Query("code").Select(x => x.Title)));
         Check("ranking: match classes are exact, title and keyword", SearchEngine.MatchClass(0) == 0 && SearchEngine.MatchClass(1) == 1 && SearchEngine.MatchClass(2) == 1 && SearchEngine.MatchClass(3) == 1 && SearchEngine.MatchClass(4) == 2 && SearchEngine.MatchClass(5) == 2);
+        // Windows search finds "SQL Server Management Studio 20" by "ssms": its program is Ssms.exe, and ssms are the initials of the title
+        Check("initials of a title (numbers and symbols skipped)", SearchEngine.Initials("SQL Server Management Studio 20") == "ssms" && SearchEngine.Initials("Visual Studio Code") == "vsc"
+            && SearchEngine.Initials("Google Chrome") == "gc" && SearchEngine.Initials("7-Zip File Manager") == "zfm" && SearchEngine.Initials("") == "" && SearchEngine.Initials("Word") == "w");
+        Check("program file name from an app id (path ids); none for the others",
+            AppCatalog.ExeNameOf(@"{6D809377-6AF0-444B-8957-A3773F02200E}\Microsoft SQL Server\160\DTS\Binn\DTSWizard.exe") == "DTSWizard" && AppCatalog.ExeNameOf(@"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\printmanagement.msc") == "printmanagement"
+            && AppCatalog.ExeNameOf(@"C:\x\a.exe") == "a" && AppCatalog.ExeNameOf("Chrome") == "" && AppCatalog.ExeNameOf("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App") == "");
+        var shellApp = new AppEntry { Name = "SQL Server Management Studio 20", AppId = "Microsoft.SQLServerManagementStudio" };
+        AppCatalog.ApplyExeName(shellApp, @"C:\Program Files (x86)\Microsoft SQL Server Management Studio 20\Common7\IDE\Ssms.exe");
+        Check("a shell lookup gives the app its program name, an existing one is kept", shellApp.ExeName == "Ssms" && AppCatalog.ApplyExeName(shellApp, @"C:\x\Other.exe") == false && shellApp.ExeName == "Ssms" && AppCatalog.ApplyExeName(new AppEntry(), "https://x") == false);
+        var findCat = new AppCatalog();
+        findCat.SetAll(new[] { shellApp, new AppEntry { Name = "Ssms Helper", AppId = "sh" }, new AppEntry { Name = "Visual Studio Code", AppId = "vsc" }, new AppEntry { Name = "Google Chrome", AppId = "gc" } });
+        var findEngine = new SearchEngine(findCat, SettingsProvider.Load(cfg.Search), new UsageStore(cfg, tmp + ".7", () => clock2), cfg.Search);
+        string Find(string q) => string.Join(" | ", findEngine.Query(q).Where(x => x.Kind == SearchKind.App).Select(x => x.Title));
+        Check("search: the program's file name finds the app (ssms), and a title match still comes first", Find("ssms") == "Ssms Helper | SQL Server Management Studio 20", Find("ssms"));
+        Check("search: the initials of the title find the app (vsc)", Find("vsc") == "Visual Studio Code", Find("vsc"));
+        Check("search: an app is not found by unrelated letters", Find("zzq") == "", Find("zzq"));
         Check("engine: empty query finds nothing", engine.Query("  ").Count == 0);
         var noSettings = new Config(); noSettings.Search.Settings = false;
         Check("config: Settings=false hides settings", new SearchEngine(catalog, SettingsProvider.Load(noSettings.Search), usage, noSettings.Search).Query("bluetooth").All(x => x.Kind == SearchKind.App));
@@ -335,6 +351,13 @@ internal static class SearchTest
         int total = catalog.All.Count, found = catalog.All.Count(a => AppLocation.Resolve(a.AppId) != null);
         Console.WriteLine($"  live: {found} of {total} start-menu apps have a file location (the rest are Store apps and web links)");
         Check("location (live): most desktop apps resolve", total == 0 || found * 2 > total, $"{found}/{total}");
+        // the program names are learned in the background after the catalog loads: wait for them, then try the Windows-search habits
+        for (int i = 0; i < 100 && catalog.All.Count(a => a.ExeName.Length == 0) > 0; i++) System.Threading.Thread.Sleep(100);
+        int withExe = catalog.All.Count(a => a.ExeName.Length > 0);
+        Console.WriteLine($"  live: {withExe} of {total} start-menu apps know their program name");
+        var liveEngine = new SearchEngine(catalog, SettingsProvider.Load(new Config().Search), new UsageStore(new Config(), Path.Combine(Path.GetTempPath(), "spread-live-usage-" + Guid.NewGuid().ToString("N") + ".json"), () => DateTime.UtcNow), new Config().Search);
+        Check("location (live): most apps know their program name", total == 0 || withExe * 3 > total * 2, $"{withExe}/{total}");
+        Console.WriteLine($"  live: 'ssms' finds {liveEngine.Query("ssms").Count(x => x.Kind == SearchKind.App)} app(s), 'vsc' finds {liveEngine.Query("vsc").Count(x => x.Kind == SearchKind.App)}, 'cmd' finds {liveEngine.Query("cmd").Count(x => x.Kind == SearchKind.App)}");
     }
 
     /// <summary>The right-click menu entries per result kind.</summary>

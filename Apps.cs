@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -21,6 +22,8 @@ internal sealed class AppEntry
     public ImageSource? Icon;
     /// <summary>Set only after Icon (volatile): the icon preload thread and the UI thread both call EnsureIcon.</summary>
     public volatile bool IconTried;
+    /// <summary>The program's file name without extension ("Ssms" for SQL Server Management Studio), so it can be found by that name like in Windows search. "" until known.</summary>
+    public volatile string ExeName = "";
 }
 
 internal sealed class AppCatalog
@@ -30,6 +33,37 @@ internal sealed class AppCatalog
     public IReadOnlyList<AppEntry> All => _all;
     /// <summary>Tests only: replaces the catalog.</summary>
     public void SetAll(IEnumerable<AppEntry> apps) => _all = apps.ToList();
+
+    /// <summary>"{KnownFolder}\...\Ssms.exe" or "C:\x\a.exe" -> "Ssms" / "a". Other ids (AppUserModelIDs, Store ids) need the shell: "".</summary>
+    internal static string ExeNameOf(string appId)
+    {
+        if (string.IsNullOrWhiteSpace(appId) || (appId[0] != '{' && !(appId.Length > 2 && appId[1] == ':'))) return "";
+        int slash = appId.LastIndexOfAny(new[] { '\\', '/' });
+        return slash < 0 ? "" : Path.GetFileNameWithoutExtension(appId[(slash + 1)..]);
+    }
+
+    /// <summary>Remember the program name of a resolved path (only a real file path, only when none is known yet). True when it changed.</summary>
+    internal static bool ApplyExeName(AppEntry app, string? path)
+    {
+        if (app.ExeName.Length > 0 || path == null || path.Length < 3 || path[1] != ':') return false;
+        string name = Path.GetFileNameWithoutExtension(path);
+        if (name.Length == 0) return false;
+        app.ExeName = name;
+        return true;
+    }
+
+    /// <summary>Path ids give their program name at once; AppUserModelIDs ("Chrome", the SSMS entry) are asked from the shell one after another in the background.</summary>
+    static void LearnExeNames(IReadOnlyList<AppEntry> apps)
+    {
+        foreach (var a in apps)
+        {
+            string fromId = ExeNameOf(a.AppId);
+            if (fromId.Length > 0) { a.ExeName = fromId; continue; }
+            var app = a;
+            if (AppLocation.NeedsShell(app.AppId))
+                AppLocation.Request(app.AppId, () => { if (AppLocation.TryGetCached(app.AppId, out var path)) ApplyExeName(app, path); });
+        }
+    }
 
     static readonly TimeSpan LoadTimeout = TimeSpan.FromSeconds(60);
 
@@ -46,6 +80,7 @@ internal sealed class AppCatalog
             {
                 _all = list.GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase).ToList();
                 Log.Write($"app catalog loaded: {_all.Count} apps");
+                LearnExeNames(_all);
                 return;
             }
             if (attempt == 1) await Task.Delay(5000).ConfigureAwait(false);
