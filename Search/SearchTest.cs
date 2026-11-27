@@ -135,6 +135,22 @@ internal static class SearchTest
             Check("engine: 'device man' -> Device Manager (if present on this Windows)", engine.Query("device man").FirstOrDefault()?.Setting?.Id == "tool-devmgmt");
         else Console.WriteLine("  skip engine: 'device man' -> Device Manager (devmgmt.msc is not on this Windows)");
         Check("engine: 'env' -> Environment Variables", engine.Query("environment var").FirstOrDefault()?.Setting?.Id == "tool-env");
+        // "code": two apps whose name starts with it, and Visual Studio Code where it is a later word. Learning must be able to overtake the match tier.
+        var codeCat = new AppCatalog();
+        codeCat.SetAll(new[] { new AppEntry { Name = "CODESOFT 2021", AppId = "cs" }, new AppEntry { Name = "CODESOFT 2021 License Manager", AppId = "csl" }, new AppEntry { Name = "Visual Studio Code", AppId = "vsc" } });
+        var codeUsage = new UsageStore(cfg, tmp + ".5", () => clock2);
+        var codeEngine = new SearchEngine(codeCat, SettingsProvider.Load(cfg.Search), codeUsage, cfg.Search);
+        string Order(string q) => string.Join(" | ", codeEngine.Query(q).Where(x => x.Kind == SearchKind.App).Select(x => x.Title));
+        Check("ranking: with no history the better title match comes first", Order("code").StartsWith("CODESOFT 2021 |"), Order("code"));
+        codeUsage.Record("app:" + UsageStore.Norm("Visual Studio Code"), 1);
+        Check("ranking: an app you chose before comes first, even when other names start with the query", Order("code").StartsWith("Visual Studio Code |"), Order("code"));
+        var exactCat = new AppCatalog();
+        exactCat.SetAll(new[] { new AppEntry { Name = "Code", AppId = "c" }, new AppEntry { Name = "Visual Studio Code", AppId = "vsc" } });
+        var exactUsage = new UsageStore(cfg, tmp + ".6", () => clock2);
+        for (int i = 0; i < 5; i++) exactUsage.Record("app:" + UsageStore.Norm("Visual Studio Code"), 1);
+        var exactEngine = new SearchEngine(exactCat, SettingsProvider.Load(cfg.Search), exactUsage, cfg.Search);
+        Check("ranking: an app named exactly like the query still comes first", exactEngine.Query("code").First().Title == "Code", string.Join(" | ", exactEngine.Query("code").Select(x => x.Title)));
+        Check("ranking: match classes are exact, title and keyword", SearchEngine.MatchClass(0) == 0 && SearchEngine.MatchClass(1) == 1 && SearchEngine.MatchClass(2) == 1 && SearchEngine.MatchClass(3) == 1 && SearchEngine.MatchClass(4) == 2 && SearchEngine.MatchClass(5) == 2);
         Check("engine: empty query finds nothing", engine.Query("  ").Count == 0);
         var noSettings = new Config(); noSettings.Search.Settings = false;
         Check("config: Settings=false hides settings", new SearchEngine(catalog, SettingsProvider.Load(noSettings.Search), usage, noSettings.Search).Query("bluetooth").All(x => x.Kind == SearchKind.App));

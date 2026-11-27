@@ -15,7 +15,7 @@ It is a single WPF application (.NET 8). It does not replace Explorer; it sits o
 - Close windows from the overview (close button, middle click or Ctrl+W).
 
 **Search** (start typing in the overview)
-- Apps from the Start menu, ranked by how often you use them.
+- Apps from the Start menu. An exact name match comes first; after that the apps you use most, so one you keep choosing rises above names that merely start with what you typed (type "code", pick Visual Studio Code, and it is first from then on).
 - Windows settings pages and tools ("check for updates", "device manager").
 - Files through [Everything](https://www.voidtools.com/), if it is running.
 - An app that is already running is switched to instead of started again.
