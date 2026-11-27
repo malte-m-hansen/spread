@@ -44,6 +44,7 @@ internal static class Program
         if (args.Contains("--log-test")) return LogTest.Run();
         if (args.Contains("--core-test")) return CoreTest.Run();
         if (args.Contains("--dpi-test")) return DpiTest.Run();
+        if (args.Contains("--autostart-task-test")) return AutostartTaskTest.Run();
         if (args.Contains("--bar-test")) { int f = WidgetTest.Offline(); Console.WriteLine(f == 0 ? "BAR TEST PASSED" : $"BAR TEST FAILED ({f})"); return f == 0 ? 0 : 1; }
         if (args.Contains("--dock-test")) return DockTest.Run(args);
         if (args.Contains("--quicksettings-test")) return QuickSettingsTest.Run(args);
@@ -67,6 +68,12 @@ internal static class Program
         if (args.Contains("--tray-spike-register")) return TraySpike.Run(true);
         int dumpIdx = Array.IndexOf(args, "--layout-dump");
         if (dumpIdx >= 0 && dumpIdx + 1 < args.Length) return LayoutDump(args[dumpIdx + 1]);
+
+        if (args.Contains(AutostartTask.FromTaskArg) && !AutostartTask.StartApprovedInRegistry())
+        {
+            Log.Write("start by the logon task skipped: Spread is switched off in Task Manager's Startup tab");
+            return 0;
+        }
 
         using var mutex = new Mutex(true, @"Local\Spread.Overview.Mutex", out bool first);
         if (!first && args.Contains("--restarted"))
@@ -210,6 +217,7 @@ internal static class Program
         {
             using var k = Registry.CurrentUser.OpenSubKey(RunKey, true);
             string wanted = LaunchCommand();
+            if (k?.GetValue("Spread") != null) System.Threading.Tasks.Task.Run(() => AutostartTask.Sync(wanted));   // create the logon task, or point it at this build
             if (k != null && ShouldRefreshAutostart(k.GetValue("Spread") as string, wanted)) { k.SetValue("Spread", wanted); Log.Write("autostart: Run value pointed elsewhere, now " + wanted); }
         }
         catch (Exception e) { Log.Write("autostart refresh failed: " + e.GetType().Name); }
@@ -226,6 +234,9 @@ internal static class Program
         using var k = Registry.CurrentUser.OpenSubKey(RunKey, true);
         if (k == null) return;
         if (on) k.SetValue("Spread", LaunchCommand()); else k.DeleteValue("Spread", false);
+        // The logon task starts Spread without waiting in Explorer's queue of Run entries; the Run entry stays as the fallback.
+        string command = LaunchCommand();
+        System.Threading.Tasks.Task.Run(() => { if (on) AutostartTask.Sync(command); else AutostartTask.Remove(); });
     }
 
     /// <summary>
