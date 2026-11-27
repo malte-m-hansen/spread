@@ -224,7 +224,8 @@ internal static class SearchTest
             Check("keys: label and hints for run as administrator", SearchKeys.Label(SearchAction.RunAsAdmin, KeyTarget.App) == "run as administrator"
                 && SearchKeys.Hint(KeyTarget.App, CtrlShift, k) == "Ctrl+Shift + Enter / click: run as administrator"
                 && SearchKeys.Hint(KeyTarget.App, System.Windows.Input.ModifierKeys.None, k).Contains("Ctrl+Shift: run as administrator"), SearchKeys.Hint(KeyTarget.App, CtrlShift, k));
-            Check("keys: an app that cannot run elevated (Store app, help file) says it just opens", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false) == "Ctrl+Shift + Enter / click: open / go to it", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false));
+            Check("keys: an app that cannot run elevated (help file, no elevation verb) says it just opens", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false, canRunAsAdmin: false) == "Ctrl+Shift + Enter / click: open / go to it", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false));
+            Check("keys: a Store app that supports it says run as administrator even without a file", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false, canRunAsAdmin: true) == "Ctrl+Shift + Enter / click: run as administrator", SearchKeys.Hint(KeyTarget.App, CtrlShift, k, hasLocation: false, canRunAsAdmin: true));
             Check("keys: hint for Alt on an app", SearchKeys.Hint(KeyTarget.App, Alt, k) == "Alt + Enter / click: open file location", SearchKeys.Hint(KeyTarget.App, Alt, k));
         }
 
@@ -285,6 +286,11 @@ internal static class SearchTest
         Check("admin: runs the program through the shell with the runas verb, in its own folder", admin.FileName == @"C:\Windows\System32\cmd.exe" && admin.Verb == "runas" && admin.UseShellExecute && admin.WorkingDirectory == @"C:\Windows\System32");
         Check("admin: only programs can be elevated, not help files or web links", AppLocation.CanRunAsAdmin(@"C:\x\a.exe") && AppLocation.CanRunAsAdmin(@"C:\x\a.CMD") && AppLocation.CanRunAsAdmin(@"C:\x\a.lnk") && AppLocation.CanRunAsAdmin(@"C:\x\a.msc")
             && !AppLocation.CanRunAsAdmin(@"C:\x\a.chm") && !AppLocation.CanRunAsAdmin(@"C:\x\a.url") && !AppLocation.CanRunAsAdmin(""));
+        Check("packaged: Store ids are recognised, desktop ids and URLs are not",
+            AppLocation.IsPackagedId("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App") && !AppLocation.IsPackagedId("Chrome") && !AppLocation.IsPackagedId(@"{6D809377-6AF0-444B-8957-A3773F02200E}\7-Zip\7zFM.exe")
+            && !AppLocation.IsPackagedId(@"C:\x\a!b.exe") && !AppLocation.IsPackagedId("https://example.com/a!b") && !AppLocation.IsPackagedId(""));
+        var pkg = AppLocation.PackagedAdminStart("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App");
+        Check("packaged: run as administrator goes through the shell item, like the Start menu does", pkg.FileName == @"shell:AppsFolder\Microsoft.WindowsTerminal_8wekyb3d8bbwe!App" && pkg.Verb == "runas" && pkg.UseShellExecute, pkg.FileName);
         Check("explorer: nothing left to show = null", AppLocation.RevealArguments(@"D:\gone\x.txt", Exists) == null);
 
         // Everything may report the folder of a drive-root item as "C:" (no backslash): Path.Combine would make the drive-relative "C:x.txt"
@@ -339,6 +345,8 @@ internal static class SearchTest
         Check("menu: app with a location", H(ResultMenu.ForApp(@"C:\x.exe", false)) == "Open|New window|Run as administrator|Open file location|Copy path|Pin to dock", H(ResultMenu.ForApp(@"C:\x.exe", false)));
         Check("menu: a pinned app offers Unpin", H(ResultMenu.ForApp(@"C:\x.exe", true)) == "Open|New window|Run as administrator|Open file location|Copy path|Unpin from dock");
         Check("menu: a program that cannot be elevated (help file) has the location entries but no Run as administrator", H(ResultMenu.ForApp(@"C:\x\help.chm", false)) == "Open|New window|Open file location|Copy path|Pin to dock", H(ResultMenu.ForApp(@"C:\x\help.chm", false)));
+        Check("menu: a Store app without a file can still be run as administrator (Terminal, Notepad), but has no location entries",
+            H(ResultMenu.ForApp(null, false, packaged: true)) == "Open|New window|Run as administrator|Pin to dock", H(ResultMenu.ForApp(null, false, packaged: true)));
         Check("menu: an app without a location (Store) has no location entries", H(ResultMenu.ForApp(null, false)) == "Open|New window|Pin to dock", H(ResultMenu.ForApp(null, false)));
         Check("menu: file", H(ResultMenu.ForFile(false)) == "Open|Show in Explorer|Open with\u2026|Copy path", H(ResultMenu.ForFile(false)));
         Check("menu: a program file can be run as administrator, a document or a folder cannot",

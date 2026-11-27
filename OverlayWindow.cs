@@ -1650,7 +1650,10 @@ internal sealed class OverlayWindow : Window
             })));
         }
         bool fileIsProgram = file && !_files[_fileSel].IsFolder;
-        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, file || hintPath != null, hintPath != null && AppLocation.CanRunAsAdmin(hintPath) && (!file || fileIsProgram));
+        // a Store app has no file, but its shell item may carry "Run as administrator" (Terminal, Notepad, Paint); the hint then promises it
+        bool packagedApp = !file && hintPath == null && _results[_sel].App is { } pkgApp && AppLocation.IsPackagedId(pkgApp.AppId);
+        bool canElevate = (hintPath != null && AppLocation.CanRunAsAdmin(hintPath) && (!file || fileIsProgram)) || packagedApp;
+        _keyHint.Text = SearchKeys.Hint(target, Keyboard.Modifiers, _cfg.Search.Keys, file || hintPath != null, canElevate);
         _keyHint.Visibility = Visibility.Visible;
     }
 
@@ -1855,13 +1858,22 @@ internal sealed class OverlayWindow : Window
     /// <summary>Ctrl+Shift+Enter: start the app's program elevated (the UAC prompt), as the Windows taskbar search does. False when it cannot be: Store apps and help files open as usual.</summary>
     bool RunAsAdmin(SearchItem item)
     {
-        string? path = item.App == null ? null : AppLocation.Resolve(item.App.AppId);
-        if (path == null || !AppLocation.CanRunAsAdmin(path)) return false;
+        var app = item.App;
+        if (app == null) return false;
+        string? path = AppLocation.Resolve(app.AppId);
+        // a program file: start it with the runas verb; a Store app (Terminal, Notepad, Paint): the same verb on its shell item, as the Start menu does
+        System.Diagnostics.ProcessStartInfo? start = path != null && AppLocation.CanRunAsAdmin(path) ? AppLocation.AdminStart(path)
+            : path == null && AppLocation.IsPackagedId(app.AppId) ? AppLocation.PackagedAdminStart(app.AppId) : null;
+        if (start == null) return false;
         _engine.Usage.Record(item.UsageKey, 1);
         BeginClose(IntPtr.Zero);
-        try { Process.Start(AppLocation.AdminStart(path)); }
+        try { Process.Start(start); }
         catch (System.ComponentModel.Win32Exception e) when (e.NativeErrorCode == 1223) { Log.Write("run as administrator: the UAC prompt was declined"); }
-        catch (Exception e) { Log.Write("run as administrator failed: " + e.GetType().Name); }
+        catch (Exception e)
+        {
+            Log.Write("run as administrator failed: " + e.GetType().Name);
+            if (path == null) AppCatalog.Launch(app);   // a Store app without an elevation verb (Calculator): open it normally
+        }
         return true;
     }
 
@@ -1891,7 +1903,7 @@ internal sealed class OverlayWindow : Window
         {
             string? loc = AppLocation.Resolve(app.AppId);
             bool pinned = _cfg.Dock.Pinned.Any(p => DockBuilder.ResolvePin(p, _apps.All) == app);
-            entries = ResultMenu.ForApp(loc, pinned);
+            entries = ResultMenu.ForApp(loc, pinned, AppLocation.IsPackagedId(app.AppId));
             run = a => RunAppMenu(item, app, loc, a);
         }
         else if (hit != null) { entries = ResultMenu.ForFile(hit.IsFolder, hit.Full); run = a => RunFileMenu(hit, a); }

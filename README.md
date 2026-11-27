@@ -75,7 +75,7 @@ To start it with Windows, use "Start with Windows" in the tray icon's menu. It a
 | Flip through a photo stack | Mouse wheel, or Page Up / Page Down |
 | Search | Just start typing; Enter opens the selected result |
 | Open an app in a new window / open a file with... | Ctrl+Enter or Shift+Enter (the keys are the same for apps and files; see `Search.Keys`) |
-| Run as administrator | Ctrl+Shift+Enter on an app or a program file (Windows asks for permission, like the taskbar search). Store apps and documents cannot be elevated and just open |
+| Run as administrator | Ctrl+Shift+Enter on an app or a program file (Windows asks for permission, like the taskbar search). Store apps that Windows lets you run as administrator (Terminal, Notepad, Paint) work too; apps that cannot be elevated (Calculator) and documents just open. An elevated app always starts a new window, even if one is already open |
 | Open the location of a result | Alt+Enter (an app: its program folder; a file: shown in Explorer), or right click it. Menu key or Shift+F10 opens the menu for the selected result. Copy path is in the menu |
 | Leave the overview | Esc (the first Esc clears the search), or click on empty space |
 | Show the real taskbar | Ctrl+Alt+T, or the Taskbar button in the top bar |
